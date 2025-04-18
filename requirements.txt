@@ -1,0 +1,11 @@
+# Animus CLI Dependencies
+
+# Core packages
+argparse>=1.4.0
+colorama>=0.4.6   # For colored terminal output
+pyreadline3>=3.4.0;platform_system=="Windows"  # For command history support on Windows systems
+
+# For future implementation - LLM integration (commented out for now)
+# transformers>=4.34.0
+# torch>=2.0.0
+# sentencepiece>=0.1.99
