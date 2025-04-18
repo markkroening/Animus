@@ -20,6 +20,7 @@ from tabulate import tabulate
 
 # Platform-specific imports
 import platform
+import threading # Added for animation
 IS_WINDOWS = platform.system() == "Windows"
 
 # Handle readline support based on platform
@@ -442,25 +443,49 @@ class LogParser:
             traceback.print_exc()
             return None
 
+# Import LLM Manager
+from .llm_manager import LLMManager, LlamaModelError
+
 class AnimusCLI:
-    """Main CLI class for Animus"""
+    """Main CLI application class for Animus"""
     
-    def __init__(self, auto_collect=True, auto_collect_age_hours=24, force_collect=False):
-        self.running = False
-        self.log_file = DEFAULT_OUTPUT_PATH
-        self.logs_loaded = False
-        self.log_data = None  # The raw JSON data
-        self.logs = None  # The parsed LogCollection
-        self.history_file = os.path.expanduser("~/.animus_history")
-        self.auto_collect = auto_collect
-        self.auto_collect_age_hours = auto_collect_age_hours
-        self.force_collect = force_collect
-        self.in_qa_mode = False
-        self.qa_context = []  # Store conversation history for context
+    def __init__(self, auto_collect=True, auto_collect_age_hours=24, force_collect=False, 
+                 model_path=None, context_size=2048, qa_mode=False, verbose=False):
+        """
+        Initialize the Animus CLI
         
-        # Only set up history if readline is available
-        if READLINE_AVAILABLE:
-            self.setup_history()
+        Args:
+            auto_collect: Whether to automatically collect logs if needed
+            auto_collect_age_hours: Max age of logs before auto-collection
+            force_collect: Whether to force log collection
+            model_path: Path to Llama model file
+            context_size: Token context size for LLM
+            qa_mode: Whether to start in QA mode immediately
+            verbose: Whether to show verbose output
+        """
+        self.logs_path = None
+        self.log_collection = None
+        self.auto_collect = auto_collect
+        self.auto_collect_age = auto_collect_age_hours
+        self.force_collect = force_collect
+        
+        # LLM settings
+        self.model_path = model_path
+        self.context_size = context_size
+        self.verbose = verbose
+        self.llm_manager = None
+        self.llm_available = False  # Will be set to True if model can be loaded
+        
+        # Interactive mode settings
+        self.qa_mode = qa_mode
+        self.history_file = os.path.join(os.path.expanduser("~"), ".animus_history")
+        self.qa_context = [] # Initialize QA context list
+        
+        # Initialize colorama
+        init(autoreset=True)
+        
+        # Setup readline for history
+        self.setup_history()
     
     def setup_history(self):
         """Set up command history for the interactive mode"""
@@ -515,8 +540,18 @@ class AnimusCLI:
         print(f"{prefix} {message}")
         
     def print_banner(self):
-        """Print the Animus CLI banner"""
+        """Print the Animus CLI banner with Llama attribution"""
         print(ANIMUS_BANNER)
+        
+        # Display Llama attribution
+        print(f"{Fore.MAGENTA}Built with Llama{Style.RESET_ALL} - AI-powered log analysis")
+        
+        # If verbose, show additional model info
+        if self.verbose and self.model_path:
+            model_name = os.path.basename(self.model_path)
+            print(f"Using model: {model_name}")
+            
+        print() # Add a newline for better spacing
         
     def print_help(self):
         """Print available commands and help information"""
@@ -524,7 +559,7 @@ class AnimusCLI:
         print(f"{Fore.YELLOW}collect{Style.RESET_ALL} [hours] [max_events] [--no-security] [--force]")
         print(f"  Collect Windows Event Logs (default: past 48 hours, 500 events per log)")
         print(f"{Fore.YELLOW}load{Style.RESET_ALL} [filename]")
-        print(f"  Load a previously collected log file (default: {os.path.basename(self.log_file)})")
+        print(f"  Load a previously collected log file (default: {os.path.basename(self.logs_path)})")
         print(f"{Fore.YELLOW}status{Style.RESET_ALL}")
         print(f"  Show information about currently loaded logs")
         print(f"{Fore.YELLOW}ask{Style.RESET_ALL} <question>")
@@ -539,14 +574,14 @@ class AnimusCLI:
         
     def check_log_loaded(self):
         """Check if logs are loaded and load if file exists but not loaded"""
-        if self.logs_loaded:
+        if self.log_collection:
             return True
             
-        if os.path.exists(self.log_file):
-            return self.load_logs(self.log_file)
+        if os.path.exists(self.logs_path):
+            return self.load_logs(self.logs_path)
         else:
             self.print_status(
-                f"No log file found at {self.log_file}. Please collect logs first with 'collect'.", 
+                f"No log file found at {self.logs_path}. Please collect logs first with 'collect'.", 
                 "error"
             )
             return False
@@ -554,84 +589,62 @@ class AnimusCLI:
     def load_logs(self, filename=None):
         """Load logs from a JSON file"""
         if filename:
-            self.log_file = filename
+            self.logs_path = filename
             
         try:
-            self.print_status(f"Loading logs from {self.log_file}...")
+            self.print_status(f"Loading logs from {self.logs_path}...")
             
             # First, check if the file is valid JSON
             try:
                 # Try with utf-8-sig first to handle BOM
                 try:
-                    with open(self.log_file, 'r', encoding='utf-8-sig') as f:
+                    with open(self.logs_path, 'r', encoding='utf-8-sig') as f:
                         raw_data = f.read()
                 except UnicodeDecodeError:
                     # Fall back to regular utf-8
-                    with open(self.log_file, 'r', encoding='utf-8') as f:
+                    with open(self.logs_path, 'r', encoding='utf-8') as f:
                         raw_data = f.read()
                     
                 # Check for common encoding issues or malformed JSON
                 if not raw_data or len(raw_data.strip()) == 0:
                     self.print_status("Log file exists but is empty", "error")
-                    self.logs_loaded = False
+                    self.log_collection = None
                     return False
                     
                 # Try to parse the JSON
                 try:
-                    self.log_data = json.loads(raw_data)
-                except json.JSONDecodeError as e:
-                    # Get more details about the JSON parsing error
-                    line_no = e.lineno
-                    col_no = e.colno
-                    # Try to extract the problematic part for debugging
-                    lines = raw_data.split('\n')
-                    if 0 <= line_no - 1 < len(lines):
-                        problem_line = lines[line_no - 1]
-                        # Highlight the position of the error
-                        error_indicator = ' ' * (col_no - 1) + '^'
-                        error_context = f"Line {line_no}, position {col_no}:\n{problem_line}\n{error_indicator}"
-                        self.print_status(f"JSON parse error: {e.msg}\n{error_context}", "error")
-                    else:
-                        self.print_status(f"JSON parse error: {e.msg} at line {line_no}, position {col_no}", "error")
-                    
-                    self.logs_loaded = False
+                    self.log_collection = LogParser.parse_file(self.logs_path)
+                except Exception as e:
+                    self.print_status(f"Error parsing log file: {e}", "error")
+                    self.log_collection = None
                     return False
             except Exception as e:
                 self.print_status(f"Error reading log file: {str(e)}", "error")
-                self.logs_loaded = False
+                self.log_collection = None
                 return False
             
-            # Parse the log file using our parser
-            parsed_logs = LogParser.parse_file(self.log_file)
-            
-            if not parsed_logs:
-                self.print_status("Failed to parse log file", "error")
-                self.logs_loaded = False
-                return False
-                
             # Store the parsed data
-            self.logs = parsed_logs
+            self.log_collection = self.log_collection
             
             # Print a summary
-            event_counts = self.logs.event_count
+            event_counts = self.log_collection.event_count
             self.print_status(
                 f"Successfully loaded {event_counts['total']} events "
                 f"({event_counts['errors']} errors, {event_counts['warnings']} warnings)",
                 "success"
             )
             
-            self.logs_loaded = True
             return True
             
         except json.JSONDecodeError as e:
             # This should rarely happen now that we're handling JSON errors above
-            self.print_status(f"Invalid JSON format in {self.log_file}: {str(e)}", "error")
+            self.print_status(f"Invalid JSON format in {self.logs_path}: {str(e)}", "error")
         except FileNotFoundError:
-            self.print_status(f"Log file not found: {self.log_file}", "error")
+            self.print_status(f"Log file not found: {self.logs_path}", "error")
         except Exception as e:
             self.print_status(f"Error loading logs: {str(e)}", "error")
             
-        self.logs_loaded = False
+        self.log_collection = None
         return False
 
     def should_collect_logs(self):
@@ -645,27 +658,27 @@ class AnimusCLI:
             return False
             
         # Check if log file exists
-        if not os.path.exists(self.log_file):
+        if not os.path.exists(self.logs_path):
             self.print_status("No existing log file found. Will collect logs automatically.", "info")
             return True
             
         try:
             # Check file age
-            file_stat = os.stat(self.log_file)
+            file_stat = os.stat(self.logs_path)
             file_mtime = datetime.fromtimestamp(file_stat.st_mtime)
             current_time = datetime.now()
             age_hours = (current_time - file_mtime).total_seconds() / 3600
             
-            if age_hours > self.auto_collect_age_hours:
+            if age_hours > self.auto_collect_age:
                 self.print_status(
-                    f"Log file is {age_hours:.1f} hours old (threshold: {self.auto_collect_age_hours} hours). Collecting fresh logs.", 
+                    f"Log file is {age_hours:.1f} hours old (threshold: {self.auto_collect_age} hours). Collecting fresh logs.", 
                     "info"
                 )
                 return True
                 
             # Try to validate the logs
             try:
-                with open(self.log_file, 'r') as f:
+                with open(self.logs_path, 'r') as f:
                     log_data = json.load(f)
                     if not isinstance(log_data, dict) or 'Events' not in log_data:
                         self.print_status("Existing log file has invalid format. Will collect fresh logs.", "warning")
@@ -674,7 +687,6 @@ class AnimusCLI:
                 self.print_status("Existing log file is corrupt or unreadable. Will collect fresh logs.", "warning")
                 return True
                 
-            self.print_status(f"Using existing log file from {file_mtime.strftime('%Y-%m-%d %H:%M:%S')}", "info")
             return False
             
         except Exception as e:
@@ -688,7 +700,7 @@ class AnimusCLI:
             
         try:
             # Use our structured data to display info
-            summary = self.logs.summarize()
+            summary = self.log_collection.summarize()
             
             print(f"\n{Fore.CYAN}Log Information:{Style.RESET_ALL}")
             print(f"Collection Time: {summary['collection_time']}")
@@ -732,90 +744,57 @@ class AnimusCLI:
             traceback.print_exc()
     
     def command_loop(self):
-        """Main interactive command loop"""
+        """Main interactive Q&A loop (simplified)"""
         self.running = True
         self.print_banner()
-        
-        # Check if we should automatically collect logs on startup
+
+        # Initial log collection/loading
         if self.should_collect_logs():
-            self.print_status("Collecting logs on startup...", "info")
+            self.print_status("Collecting logs...", "info") # Keep brief message
             self.handle_collect_command([])
-        elif os.path.exists(self.log_file) and not self.logs_loaded:
-            # Try to load existing logs
+        elif os.path.exists(self.logs_path) and not self.log_collection:
             self.load_logs()
-            
-        self.print_status("Type 'help' for available commands or 'exit' to quit")
-        
+
+        # Show System Summary and Error counts if logs loaded
+        if self.log_collection:
+            system = self.log_collection.system_info
+            print(f"\n{Fore.CYAN}System Summary:{Style.RESET_ALL}")
+            print(f"OS: {system.os_name} {system.os_version}")
+            print(f"Model: {system.manufacturer} {system.model}")
+            print(f"Uptime: {system.uptime}")
+
+            error_count = len(self.log_collection.error_events)
+            warning_count = len(self.log_collection.warning_events)
+            if error_count > 0:
+                print(f"\n{Fore.RED}Found {error_count} error/critical events and {warning_count} warnings{Style.RESET_ALL}")
+            else:
+                print(f"\nNo critical errors found in the logs.")
+            print() # Add a blank line before the prompt
+        else:
+            # If logs couldn't be loaded/collected, we can't proceed with Q&A
+            self.print_status("Failed to load or collect logs. Cannot start Q&A.", "error")
+            self.running = False # Prevent loop from starting
+
         while self.running:
             try:
-                # Display prompt
-                if self.in_qa_mode:
-                    user_input = input(f"{Fore.MAGENTA}question> {Style.RESET_ALL}").strip()
-                else:
-                    user_input = input(f"{Fore.GREEN}animus> {Style.RESET_ALL}").strip()
-                
+                # Always use the Q&A prompt, now changed to Animus>
+                user_input = input(f"{Fore.MAGENTA}Animus> {Style.RESET_ALL}").strip()
+
                 # Skip empty input
                 if not user_input:
                     continue
-                    
-                # Handle special case for Q&A mode
-                if self.in_qa_mode:
-                    if user_input.lower() in ('exit', 'quit', 'back', 'end'):
-                        self.in_qa_mode = False
-                        self.print_status("Exiting Q&A mode", "info")
-                        continue
-                    else:
-                        self.handle_query(user_input, add_to_context=True)
-                        continue
-                    
-                # Parse the command and arguments for normal mode
-                try:
-                    parts = shlex.split(user_input)
-                    command = parts[0].lower()
-                    args = parts[1:]
-                except ValueError as e:
-                    self.print_status(f"Invalid input: {e}", "error")
-                    continue
-                
-                # Process commands
-                if command in ['exit', 'quit']:
-                    self.running = False
-                    break
-                elif command == 'help':
-                    self.print_help()
-                elif command == 'collect':
-                    self.handle_collect_command(args)
-                elif command == 'load':
-                    filename = args[0] if args else self.log_file
-                    self.load_logs(filename)
-                elif command == 'status':
-                    self.show_status()
-                elif command == 'ask':
-                    question = ' '.join(args)
-                    if question:
-                        self.handle_query(question)
-                    else:
-                        self.print_status("Please provide a question after 'ask'", "error")
-                elif command == 'qa':
-                    self.start_qa_mode()
-                else:
-                    # Treat unrecognized commands as questions if logs are loaded
-                    self.handle_query(user_input)
-                    
-            except KeyboardInterrupt:
-                print()  # Add a newline
-                if self.in_qa_mode:
-                    self.in_qa_mode = False
-                    self.print_status("Exiting Q&A mode", "info")
-                else:
-                    self.print_status("Use 'exit' to quit", "info")
-            except EOFError:
-                print()  # Add a newline
+
+                # Treat all input as a query
+                self.handle_query(user_input, add_to_context=True)
+
+            except (KeyboardInterrupt, EOFError):
+                print() # Add a newline for clean exit
                 self.running = False
                 break
             except Exception as e:
                 self.print_status(f"Error: {e}", "error")
-                
+                # Optionally add: self.running = False # to exit on error
+
         # Save history before exit
         self.save_history()
         self.print_status("Goodbye!", "info")
@@ -839,7 +818,7 @@ class AnimusCLI:
                 
             # Collect logs
             success = collect_logs(
-                self.log_file,
+                self.logs_path,
                 hours,
                 max_events,
                 include_security,
@@ -854,220 +833,256 @@ class AnimusCLI:
             self.print_status(f"Error during log collection: {e}", "error")
     
     def start_qa_mode(self):
-        """Start an interactive Q&A session"""
-        if not self.check_log_loaded():
-            return
-            
-        self.in_qa_mode = True
-        self.qa_context = []  # Reset context
-        
-        print(f"\n{Fore.CYAN}═════════════════════════════════════════════════════{Style.RESET_ALL}")
-        print(f"{Fore.MAGENTA}Interactive Q&A Mode{Style.RESET_ALL}")
-        print(f"Ask questions about your Windows system and event logs.")
-        print(f"Type {Fore.YELLOW}exit{Style.RESET_ALL}, {Fore.YELLOW}quit{Style.RESET_ALL}, or {Fore.YELLOW}back{Style.RESET_ALL} to return to the main CLI.")
-        print(f"{Fore.CYAN}═════════════════════════════════════════════════════{Style.RESET_ALL}\n")
-        
-        # Provide a helpful starting prompt
-        self.print_status("You can ask about errors, system information, specific event IDs, or search for keywords.", "info")
-        
-        # Show a summary of the system to help the user get started
-        system = self.logs.system_info
-        print(f"\n{Fore.CYAN}System Summary:{Style.RESET_ALL}")
-        print(f"OS: {system.os_name} {system.os_version}")
-        print(f"Model: {system.manufacturer} {system.model}")
-        print(f"Uptime: {system.uptime}")
-        
-        # Show count of errors if any
-        error_count = len(self.logs.error_events)
-        warning_count = len(self.logs.warning_events)
-        if error_count > 0:
-            print(f"\n{Fore.RED}Found {error_count} error/critical events and {warning_count} warnings{Style.RESET_ALL}")
-            print(f"Try asking: 'What errors have occurred?' or 'Show me recent errors'")
-        else:
-            print(f"\nNo critical errors found in the logs. Try asking about system information or events.")
+        """Mark the CLI to run in Q&A mode (simplified)"""
+        self.qa_mode = True
+        # We don't need to check logs here anymore, command_loop does
+        return True # Indicate QA mode was set
 
     def handle_query(self, query, add_to_context=False):
         """Handle a query about the logs"""
         if not self.check_log_loaded():
+            # This check might be redundant now command_loop ensures logs exist
+            # but keep it as a safeguard
             return
-        
-        # Format the query for display
-        if self.in_qa_mode:
-            print(f"{Fore.CYAN}Q: {query}{Style.RESET_ALL}")
-        else:
-            self.print_status(f"Query: {query}", "question")
-            
-        # Track the query in context if in QA mode
+
+        # Track the query in context
         if add_to_context:
             self.qa_context.append({"role": "user", "content": query})
-            
+
         # Process the query
         answer = self.process_query(query)
-        
-        # Format and display the answer
-        if self.in_qa_mode:
-            print(f"{Fore.YELLOW}A: {Style.RESET_ALL}{answer}\n")
-            # Add the answer to context
-            self.qa_context.append({"role": "assistant", "content": answer})
-        else:
-            print(f"\n{answer}\n")
+
+        # Format and display the answer (Removed A: prefix)
+        print(f"{Style.RESET_ALL}{answer}\n")
+        # Add the answer to context
+        self.qa_context.append({"role": "assistant", "content": answer})
     
     def process_query(self, query):
-        """Process a query and return an answer"""
+        """
+        Process a natural language query about the logs
+        
+        Args:
+            query: The question to process
+            
+        Returns:
+            The LLM-generated answer or a placeholder if LLM not available
+        """
+        # --- Animation Function ---
+        def thinking_animation(stop_event):
+            animation_chars = ['   ', '.  ', '.. ', '...']
+            idx = 0
+            while not stop_event.is_set():
+                print(f"Thinking{animation_chars[idx % len(animation_chars)]}   \r", end='', flush=True)
+                idx += 1
+                time.sleep(0.3)
+            # Clear the animation line when stopped
+            print('            \r', end='', flush=True)
+
+        # Check if logs are loaded
+        if not self.log_collection:
+            self.print_status("No logs loaded. Please load logs first.", "error")
+            return "No logs are loaded to analyze. Use 'load' to load logs."
+
+        # Try to initialize LLM if not done yet
+        if not self.llm_manager:
+            try:
+                self.print_status("Initializing LLM for analysis...", "info")
+                self.llm_manager = LLMManager(
+                    model_path=self.model_path,
+                    context_size=self.context_size,
+                    verbose=self.verbose
+                )
+                self.llm_manager.load_model()
+                self.llm_available = True
+                self.print_status("LLM initialized successfully", "success")
+            except LlamaModelError as e:
+                self.print_status(f"Failed to initialize LLM: {e}", "error")
+                self.print_status("Continuing with basic analysis only.", "warning")
+                self.llm_available = False
+            except Exception as e:
+                self.print_status(f"Unexpected error initializing LLM: {e}", "error")
+                self.llm_available = False
+
+        # If LLM is available, use it to process the query
+        if self.llm_available and self.llm_manager:
+            stop_event = threading.Event()
+            animation_thread = None
+            response = "Error: LLM response was not generated." # Default/error response
+            generation_time = 0
+            llm_success = False
+
+            try:
+                # Get the raw log data
+                with open(self.logs_path, 'r', encoding='utf-8') as f:
+                    raw_log_data = json.load(f)
+
+                # Start animation thread
+                animation_thread = threading.Thread(target=thinking_animation, args=(stop_event,))
+                animation_thread.daemon = True # Allows main thread to exit even if animation hangs
+                animation_thread.start()
+
+                # Process with LLM
+                response, generation_time = self.llm_manager.query_logs(
+                    query=query,
+                    log_data=raw_log_data,
+                    max_response_tokens=1024
+                )
+                llm_success = True # Mark success if query_logs returns
+
+            except LlamaModelError as e:
+                self.print_status(f"LLM analysis failed: {e}", "error")
+                # Keep llm_success as False
+            except Exception as e:
+                self.print_status(f"Error during analysis: {e}", "error")
+                # Keep llm_success as False
+            finally:
+                # Ensure animation stops
+                if animation_thread is not None:
+                    stop_event.set()
+                    # Don't necessarily need to join if it's a daemon thread,
+                    # but joining ensures the line clearing happens.
+                    animation_thread.join(timeout=1.0) # Wait briefly for cleanup
+
+            # After try/except/finally, decide what to return
+            if llm_success:
+                if self.verbose:
+                    self.print_status(f"Analysis completed in {generation_time:.2f} seconds", "success")
+                return response
+            else:
+                 # If LLM failed, fall back
+                 return self._fallback_analysis(query)
+
+        else:
+            # LLM was not available in the first place
+            return self._fallback_analysis(query)
+            
+    def _fallback_analysis(self, query):
+        """Provide a basic analysis without LLM"""
+        # Basic keyword matching
         query_lower = query.lower()
-        answer = ""
         
-        # Use context to potentially improve answers in QA mode
-        # This is a placeholder - in a real implementation, we'd use an LLM to process the context
-        previous_questions = []
-        if self.in_qa_mode and len(self.qa_context) > 0:
-            previous_questions = [item["content"] for item in self.qa_context if item["role"] == "user"]
-            
-        # Extract event ID if present
-        event_id_match = re.search(r'event\s+id\s*[:=]?\s*(\d+)', query_lower)
-        if event_id_match:
-            event_id = int(event_id_match.group(1))
-            events = self.logs.events_by_id(event_id)
-            
-            if events:
-                answer = f"Found {len(events)} events with ID {event_id}:\n\n"
-                for i, event in enumerate(events[:5], 1):  # Show first 5
-                    answer += f"{i}. [{event.time_created}] {event.provider_name}\n"
-                    answer += f"   {event.message[:200]}...\n\n"
-                if len(events) > 5:
-                    answer += f"...and {len(events) - 5} more\n"
-            else:
-                answer = f"No events found with ID {event_id}"
-            return answer
-            
-        # Error queries - look for words like errors, issues, problems, critical
-        if any(word in query_lower for word in ["error", "issue", "problem", "critical", "fail", "crash"]):
-            errors = self.logs.error_events
+        results = []
+        
+        # Check for common query patterns
+        if "error" in query_lower or "critical" in query_lower:
+            errors = self.log_collection.error_events[:5]  # Show top 5 errors
             if errors:
-                answer = f"Found {len(errors)} error/critical events:\n\n"
-                for i, event in enumerate(errors[:5], 1):  # Show first 5
-                    answer += f"{i}. [{event.time_created}] {event.provider_name} (ID: {event.event_id})\n"
-                    answer += f"   {event.message[:200]}...\n\n"
-                if len(errors) > 5:
-                    answer += f"...and {len(errors) - 5} more\n"
+                results.append("Found recent errors/critical events:")
+                for e in errors:
+                    results.append(f"- {e.time_created}: {e.provider_name} (EventID: {e.event_id})")
+                    results.append(f"  {e.message[:150]}..." if len(e.message) > 150 else f"  {e.message}")
             else:
-                answer = "No error events found in the collected logs."
-            return answer
-            
-        # Warning queries
-        if "warning" in query_lower:
-            warnings = self.logs.warning_events
+                results.append("No error or critical events found in the logs.")
+                
+        elif "warning" in query_lower:
+            warnings = self.log_collection.warning_events[:5]
             if warnings:
-                answer = f"Found {len(warnings)} warning events:\n\n"
-                for i, event in enumerate(warnings[:5], 1):  # Show first 5
-                    answer += f"{i}. [{event.time_created}] {event.provider_name} (ID: {event.event_id})\n"
-                    answer += f"   {event.message[:200]}...\n\n"
-                if len(warnings) > 5:
-                    answer += f"...and {len(warnings) - 5} more\n"
+                results.append("Found recent warnings:")
+                for w in warnings:
+                    results.append(f"- {w.time_created}: {w.provider_name} (EventID: {w.event_id})")
+                    results.append(f"  {w.message[:150]}..." if len(w.message) > 150 else f"  {w.message}")
             else:
-                answer = "No warning events found in the collected logs."
-            return answer
-            
-        # Recent events queries
-        if any(word in query_lower for word in ["recent", "latest", "last", "new"]):
-            events = self.logs.recent_events(10)  # Get 10 most recent
-            if events:
-                answer = f"Here are the 10 most recent events:\n\n"
-                for i, event in enumerate(events, 1):
-                    answer += f"{i}. [{event.time_created}] {event.provider_name} ({event.level.value}, ID: {event.event_id})\n"
-                    answer += f"   {event.message[:100]}...\n\n"
+                results.append("No warning events found in the logs.")
+                
+        elif "reboot" in query_lower or "restart" in query_lower or "shutdown" in query_lower:
+            # Look for common reboot/shutdown event IDs
+            reboot_events = []
+            for e in self.log_collection.all_events:
+                # Common Windows reboot/shutdown related events
+                if (e.provider_name.lower() == "user32" and e.event_id == 1074) or \
+                   (e.provider_name.lower() == "kernel-power" and e.event_id == 41) or \
+                   "restart" in e.message.lower() or "shutdown" in e.message.lower() or \
+                   "power off" in e.message.lower():
+                    reboot_events.append(e)
+                    
+            if reboot_events:
+                results.append("Found events related to system restart/shutdown:")
+                for e in reboot_events[:5]:
+                    results.append(f"- {e.time_created}: {e.provider_name} (EventID: {e.event_id})")
+                    results.append(f"  {e.message[:150]}..." if len(e.message) > 150 else f"  {e.message}")
             else:
-                answer = "No events found in the collected logs."
-            return answer
+                results.append("No clear shutdown/restart events found in the logs.")
+                
+        else:
+            # Generic case - just show system summary and recent events
+            results.append("Without LLM capabilities, only basic analysis is available.")
+            results.append("Here's a summary of the logs:")
+            results.append(f"- System: {self.log_collection.system_info.os_name} ({self.log_collection.system_info.os_version})")
+            results.append(f"- Last Boot: {self.log_collection.system_info.last_boot_time}")
+            results.append(f"- Total Events: {self.log_collection.event_count['total']}")
+            results.append(f"- Errors: {self.log_collection.event_count['errors']}")
+            results.append(f"- Warnings: {self.log_collection.event_count['warnings']}")
             
-        # System information query
-        if any(x in query_lower for x in ["system", "os", "hardware", "computer", "configuration", "specs", "about"]):
-            system = self.logs.system_info
-            answer = f"System Information:\n\n"
-            answer += f"OS: {system.os_name} {system.os_version} (Build {system.os_build})\n"
-            answer += f"Architecture: {system.architecture}\n"
-            answer += f"Manufacturer: {system.manufacturer}\n"
-            answer += f"Model: {system.model}\n"
-            answer += f"Processor: {system.processor_name}\n"
-            answer += f"Cores: {system.cores} physical, {system.logical_processors} logical\n"
-            answer += f"Memory: {system.memory}\n"
-            answer += f"Install Date: {system.install_date}\n"
-            answer += f"Last Boot: {system.last_boot_time}\n"
-            answer += f"Uptime: {system.uptime}\n"
+            # Show some recent events
+            results.append("\nRecent events:")
+            for e in self.log_collection.all_events[:5]:
+                results.append(f"- {e.time_created}: {e.level.name} from {e.provider_name} (ID: {e.event_id})")
+                
+            results.append("\nTry asking about specific errors, warnings, or reboots.")
+            results.append("To use AI-powered analysis, please install the Llama model.")
             
-            if system.disks:
-                answer += f"\nDisks:\n"
-                for disk in system.disks:
-                    answer += f"  {disk.get('DeviceID', 'Unknown')}: " 
-                    answer += f"{disk.get('Size', 'Unknown')} total, " 
-                    answer += f"{disk.get('FreeSpace', 'Unknown')} free " 
-                    answer += f"({disk.get('PercentFree', 'Unknown')})\n"
-            return answer
-            
-        # Count or summary queries
-        if any(word in query_lower for word in ["count", "summary", "statistics", "stats", "overview", "how many"]):
-            counts = self.logs.event_count
-            collection_time = self.logs.collection_time
-            time_range = self.logs.time_range
-            
-            answer = f"Log Summary (collected on {collection_time}):\n\n"
-            answer += f"Time Range: {time_range.get('StartTime', 'Unknown')} to {time_range.get('EndTime', 'Unknown')}\n\n"
-            answer += f"Event Counts:\n"
-            answer += f"- System: {counts['system']}\n"
-            answer += f"- Application: {counts['application']}\n"
-            answer += f"- Security: {counts['security']}\n"
-            answer += f"- Total: {counts['total']}\n"
-            answer += f"- Errors/Critical: {counts['errors']}\n"
-            answer += f"- Warnings: {counts['warnings']}\n"
-            return answer
-        
-        # Help queries - recognize various forms of help requests
-        if any(word in query_lower for word in ["help", "how to", "commands", "usage", "what can you do", "what can i ask"]):
-            answer = "Here are some things you can ask me about:\n\n"
-            answer += "- 'Show me recent errors' - Display recent error events\n"
-            answer += "- 'What warnings are there?' - List warning events\n" 
-            answer += "- 'Tell me about event ID 1234' - Find events with a specific ID\n"
-            answer += "- 'System information' - Show hardware and OS details\n"
-            answer += "- 'Show recent events' - Display the most recent events\n"
-            answer += "- 'How many events are there?' - Get counts and statistics\n"
-            answer += "- 'Search for network' - Find events containing specific text\n\n"
-            answer += "You can also ask for help or type 'exit' to leave Q&A mode."
-            return answer
-        
-        # Generic text search for anything else
-        if len(query) > 3:  # Only search if query is substantial
-            events = self.logs.events_by_text(query)
-            if events:
-                answer = f"Found {len(events)} events matching '{query}':\n\n"
-                for i, event in enumerate(events[:5], 1):  # Show first 5
-                    answer += f"{i}. [{event.time_created}] {event.provider_name} ({event.level.value}, ID: {event.event_id})\n"
-                    answer += f"   {event.message[:200]}...\n\n"
-                if len(events) > 5:
-                    answer += f"...and {len(events) - 5} more\n"
-            else:
-                answer = f"No events found matching '{query}'"
-            return answer
-            
-        # Default response if no patterns matched
-        answer = "I don't have enough information to answer that question specifically. Try asking about errors, warnings, system information, or specific event IDs.\n\nIn the future, this CLI will integrate with an LLM for more advanced analysis. For now, you can try rephrasing your question or type 'help' to see examples of what you can ask."
-        return answer
+        return "\n".join(results)
 
 def parse_arguments():
     """Parse command line arguments"""
-    parser = argparse.ArgumentParser(description="Animus CLI - Windows Event Log Analyzer")
-    parser.add_argument("--collect-logs", action="store_true", help="Collect Windows Event Logs")
-    parser.add_argument("--collect-now", action="store_true", help="Force immediate log collection regardless of existing log age")
-    parser.add_argument("--output", "-o", default=DEFAULT_OUTPUT_PATH, help="Output file path for logs")
-    parser.add_argument("--hours", type=int, default=48, help="Hours of logs to collect (default: 48)")
-    parser.add_argument("--max-events", type=int, default=500, help="Maximum events per log type (default: 500)")
-    parser.add_argument("--no-security", action="store_true", help="Exclude Security logs")
-    parser.add_argument("--analyze", action="store_true", help="Start analysis mode (interactive Q&A)")
-    parser.add_argument("--qa", action="store_true", help="Start interactive Q&A mode")
-    parser.add_argument("--query", "-q", help="Single query mode (non-interactive)")
-    parser.add_argument("--interactive", "-i", action="store_true", help="Start interactive CLI mode")
-    parser.add_argument("--version", "-v", action="store_true", help="Show version information")
-    parser.add_argument("--no-auto-collect", action="store_true", help="Disable automatic log collection on startup")
-    parser.add_argument("--auto-collect-age", type=int, default=24, help="Auto-collect if logs are older than this many hours (default: 24)")
+    parser = argparse.ArgumentParser(
+        description="Animus - Windows Event Log Analysis CLI",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter
+    )
+    
+    # Log collection options
+    parser.add_argument("--output", "-o", 
+                        help="Path to write/read the log JSON file",
+                        default=DEFAULT_OUTPUT_PATH)
+    
+    parser.add_argument("--hours", "-H", 
+                        help="Hours of logs to collect", 
+                        type=int, 
+                        default=48)
+    
+    parser.add_argument("--max-events", "-m", 
+                        help="Maximum events per log type to collect", 
+                        type=int, 
+                        default=500)
+    
+    parser.add_argument("--collect", "-c", 
+                        help="Force collection of logs even if recent logs exist", 
+                        action="store_true")
+    
+    parser.add_argument("--no-auto-collect", 
+                        help="Disable automatic log collection", 
+                        action="store_true")
+    
+    parser.add_argument("--no-security", 
+                        help="Skip collection of security logs", 
+                        action="store_true")
+    
+    # Interaction options
+    parser.add_argument("--interactive", "-i", 
+                        help="Start in interactive mode", 
+                        action="store_true")
+    
+    parser.add_argument("--qa", "-Q", 
+                        help="Start directly in Q&A mode", 
+                        action="store_true")
+    
+    parser.add_argument("--query", "-q", 
+                        help="Process a single query and exit",
+                        type=str)
+    
+    # LLM options
+    parser.add_argument("--model-path", 
+                        help="Path to Llama model file (llama-2-7b-chat.Q4_0.gguf)",
+                        type=str)
+    
+    parser.add_argument("--context-size", 
+                        help="Token context size for the LLM",
+                        type=int,
+                        default=4096)
+    
+    parser.add_argument("--verbose", "-v", 
+                        help="Enable verbose output", 
+                        action="store_true")
     
     return parser.parse_args()
 
@@ -1191,109 +1206,89 @@ def check_powershell_requirements():
         print("Please ensure PowerShell is installed and accessible in your PATH.", file=sys.stderr)
         return False
 
-def analyze_logs(log_file_path, query=None, auto_collect=True, auto_collect_age=24, force_collect=False, qa_mode=False):
-    """Analyze logs and optionally enter interactive Q&A mode"""
-    # Check if log collection is needed
-    if force_collect or (auto_collect and not check_log_freshness(log_file_path, auto_collect_age)):
-        text = "Forced collection of fresh logs..." if force_collect else "Log file is outdated or missing. Collecting fresh logs..."
-        print(text)
-        collect_logs(log_file_path, force_collect=force_collect)
-    
-    if not os.path.exists(log_file_path):
-        print(f"Error: Log file not found at {log_file_path}", file=sys.stderr)
-        print("Please collect logs first using the --collect-logs option.", file=sys.stderr)
-        return False
-        
-    print(f"Starting analysis of logs from {log_file_path}")
-    
-    # Create CLI instance and load logs
-    cli = AnimusCLI(auto_collect=auto_collect, auto_collect_age_hours=auto_collect_age, force_collect=force_collect)
-    cli.log_file = log_file_path
-    
-    # Load the logs
-    if not cli.load_logs():
-        return False
-    
-    # Handle different modes
+def analyze_logs(log_file_path, query=None, auto_collect=True, auto_collect_age=24,
+                force_collect=False, qa_mode=False, model_path=None, context_size=2048,
+                verbose=False):
+    """
+    Analyze logs with the Animus CLI
+
+    Args:
+        log_file_path: Path to the logs JSON file
+        query: Optional single query to process
+        auto_collect: Whether to automatically collect logs if needed
+        auto_collect_age: Max age of logs before auto-collection
+        force_collect: Whether to force log collection
+        qa_mode: Whether to start in QA mode
+        model_path: Path to Llama model file
+        context_size: Token context size for LLM
+        verbose: Whether to show verbose output
+    """
+    # Create CLI object
+    cli = AnimusCLI(
+        auto_collect=auto_collect,
+        auto_collect_age_hours=auto_collect_age,
+        force_collect=force_collect,
+        model_path=model_path,
+        context_size=context_size,
+        qa_mode=qa_mode, # Pass the initial qa_mode flag
+        verbose=verbose
+    )
+
+    # Set logs path
+    cli.logs_path = log_file_path
+
+    # Initial log check/collection happens within command_loop now for better message order
+    # # Check if logs exist and are fresh
+    # if not os.path.exists(log_file_path) or force_collect:
+    #     if auto_collect:
+    #         cli.handle_collect_command([])
+    #     else:
+    #         cli.print_status(f"Log file not found at {log_file_path}", "error")
+    #         return 1
+    # elif auto_collect and not check_log_freshness(log_file_path, auto_collect_age):
+    #     cli.print_status(f"Logs are older than {auto_collect_age} hours, collecting fresh logs...", "info")
+    #     cli.handle_collect_command([])
+
+    # Loading logs also happens within command_loop
+    # # Try to load logs
+    # if not cli.load_logs(log_file_path):
+    #     return 1
+
+    # Process single query and exit if provided
     if query:
-        # Single query mode - just answer and exit
-        cli.handle_query(query)
-        return True
-    elif qa_mode:
-        # Start in QA mode directly
-        cli.start_qa_mode()
-        cli.command_loop()
-        return True
-    else:
-        # Regular command loop
-        cli.command_loop()
-        return True
+        # Need to ensure logs are loaded before processing single query
+        if not cli.load_logs(log_file_path):
+             return 1 # Exit if logs can't be loaded
+        print(f"{Fore.CYAN}Query: {Fore.WHITE}{query}")
+        result = cli.process_query(query)
+        print(f"\n{result}")
+        return 0
+
+    # If not a single query, start the command loop
+    # The loop will handle QA mode startup messages internally
+    # if qa_mode:
+    #     cli.start_qa_mode() # This only sets the flag now
+
+    cli.command_loop()
+    return 0
 
 def main():
-    """Main entry point for the Animus CLI tool"""
+    """Main entry point for the Animus CLI"""
+    # Parse command line arguments
     args = parse_arguments()
     
-    # Show version and exit
-    if args.version:
-        print(f"Animus CLI v{ANIMUS_VERSION}")
-        return
-    
-    # Check if PowerShell is available (required for log collection)
-    if not check_powershell_requirements():
-        sys.exit(1)
-    
-    # Set up auto-collection settings
-    auto_collect = not args.no_auto_collect
-    auto_collect_age = args.auto_collect_age
-    force_collect = args.collect_now
-        
-    # Collect logs if requested or needed
-    if args.collect_logs or args.collect_now:
-        success = collect_logs(
-            args.output,
-            args.hours,
-            args.max_events,
-            not args.no_security,
-            force_collect=args.collect_now
-        )
-        if not success:
-            sys.exit(1)
-    elif auto_collect and not check_log_freshness(args.output, auto_collect_age):
-        print(f"Log file is outdated or missing. Collecting fresh logs...")
-        success = collect_logs(
-            args.output,
-            args.hours,
-            args.max_events, 
-            not args.no_security
-        )
-        if not success:
-            sys.exit(1)
-    
-    # Start interactive mode if requested
-    if args.interactive or (not any([args.collect_logs, args.collect_now, args.query, args.analyze, args.qa]) and not args.version):
-        cli = AnimusCLI(auto_collect=auto_collect, auto_collect_age_hours=auto_collect_age, force_collect=force_collect)
-        cli.log_file = args.output
-        cli.command_loop()
-        return
-    
-    # Analyze logs if requested
-    if args.analyze or args.query or args.qa:
-        log_path = args.output
-        success = analyze_logs(
-            log_path, 
-            args.query, 
-            auto_collect=auto_collect, 
-            auto_collect_age=auto_collect_age,
-            force_collect=force_collect,
-            qa_mode=args.qa
-        )
-        if not success:
-            sys.exit(1)
-    
-    # If no action was specified and not in interactive mode, show help
-    if not (args.collect_logs or args.collect_now or args.analyze or args.query or args.interactive or args.qa or args.version):
-        parser = argparse.ArgumentParser()
-        parser.print_help()
+    # Run analysis
+    return analyze_logs(
+        log_file_path=args.output,
+        query=args.query,
+        auto_collect=not args.no_auto_collect,
+        auto_collect_age=args.hours,
+        force_collect=args.collect,
+        qa_mode=args.qa or args.interactive,
+        model_path=args.model_path,
+        context_size=args.context_size,
+        verbose=args.verbose
+    )
 
 if __name__ == "__main__":
     main()
