@@ -10,6 +10,12 @@ param (
     [switch]$IncludeSecurity = $true         # Flag to include Security logs (which can be large)
 )
 
+# Ensure output directory exists
+$OutputDir = Split-Path -Parent $OutputFile
+if ($OutputDir -and -not (Test-Path $OutputDir)) {
+    New-Item -ItemType Directory -Path $OutputDir -Force | Out-Null
+}
+
 # Function to get formatted date/time for filtering
 function Get-FormattedTimeBack {
     param ([int]$Hours)

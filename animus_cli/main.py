@@ -23,39 +23,46 @@ import platform
 import threading # Added for animation
 IS_WINDOWS = platform.system() == "Windows"
 
-# Handle readline support based on platform
-if IS_WINDOWS:
-    try:
-        # Try to use pyreadline3 on Windows
-        import pyreadline3
-        READLINE_AVAILABLE = True
-    except ImportError:
-        READLINE_AVAILABLE = False
-        print("Warning: Command history not available. Install pyreadline3 with: pip install pyreadline3")
+# Determine if running as a bundled executable (PyInstaller)
+if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
+    # Running in a bundle
+    IS_BUNDLED = True
+    # Base path is the directory containing the executable
+    APP_BASE_DIR = os.path.dirname(sys.executable)
+    # Path to bundled data files (like the PowerShell script)
+    BUNDLED_DATA_DIR = sys._MEIPASS
 else:
-    try:
-        # Use standard readline on Unix/Linux/Mac
-        import readline
-        READLINE_AVAILABLE = True
-    except ImportError:
-        READLINE_AVAILABLE = False
-        print("Warning: readline module not available. Command history will be disabled.")
+    # Running as a normal script
+    IS_BUNDLED = False
+    # Base path is the project root (assuming standard structure)
+    APP_BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    BUNDLED_DATA_DIR = APP_BASE_DIR # Not strictly needed, but avoids errors
 
-# Create dummy readline functions if not available
+# Adjust paths based on execution context
+if not IS_BUNDLED:
+    SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+    PROJECT_ROOT = os.path.dirname(SCRIPT_DIR)
+    POWERSHELL_DIR = os.path.join(PROJECT_ROOT, "powershell")
+    LOG_COLLECTOR_SCRIPT = os.path.join(POWERSHELL_DIR, "collect_logs.ps1")
+    DEFAULT_OUTPUT_PATH = os.path.join(os.getcwd(), "logs", "animus_logs.json")
+    os.makedirs(os.path.dirname(DEFAULT_OUTPUT_PATH), exist_ok=True)
+
+# Unused! These comments and code are for local Llama model files, not needed for Google Gemini API
+# Handle command history support via standard readline
+try:
+    import readline
+    READLINE_AVAILABLE = True
+except ImportError:
+    READLINE_AVAILABLE = False
+    print("Warning: Command history not available. Install the 'readline' module.")
+
+# Provide dummy readline if not available
 if not READLINE_AVAILABLE:
     class DummyReadline:
-        def read_history_file(self, *args, **kwargs):
-            pass
-        
-        def write_history_file(self, *args, **kwargs):
-            pass
-            
-        def set_history_length(self, *args, **kwargs):
-            pass
-    
-    # Create a readline module with dummy methods
-    if "readline" not in sys.modules:
-        sys.modules["readline"] = DummyReadline()
+        def read_history_file(self, *args, **kwargs): pass
+        def write_history_file(self, *args, **kwargs): pass
+        def set_history_length(self, *args, **kwargs): pass
+    sys.modules["readline"] = DummyReadline()
 
 try:
     import colorama
@@ -69,13 +76,6 @@ except ImportError:
         def __getattr__(self, name):
             return ""
     Fore = Style = DummyColor()
-
-# Define paths with platform-appropriate separators
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-PROJECT_ROOT = os.path.dirname(SCRIPT_DIR)
-POWERSHELL_DIR = os.path.join(PROJECT_ROOT, "powershell")
-LOG_COLLECTOR_SCRIPT = os.path.join(POWERSHELL_DIR, "collect_logs.ps1")
-DEFAULT_OUTPUT_PATH = os.path.join(PROJECT_ROOT, "animus_logs.json")
 
 # CLI constants
 ANIMUS_VERSION = "0.1.0"
@@ -104,7 +104,10 @@ class EventLevel(Enum):
     @classmethod
     def from_string(cls, level_str: str) -> 'EventLevel':
         """Convert string level to enum"""
-        normalized = level_str.lower() if level_str else ""
+        if not level_str:
+            return cls.UNKNOWN
+            
+        normalized = level_str.lower()
         if "critical" in normalized:
             return cls.CRITICAL
         elif "error" in normalized:
@@ -136,26 +139,53 @@ class EventLogEntry:
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> 'EventLogEntry':
         """Create an EventLogEntry from a dictionary (JSON)"""
-        # Extract and convert fields with proper validation
         try:
+            # Extract required fields with defaults
+            time_created = data.get('TimeCreated', '')
+            log_name = data.get('LogName', '')
+            level_str = data.get('Level', '')
+            event_id = int(data.get('EventID', 0)) 
+            provider_name = data.get('ProviderName', '')
+            message = data.get('Message', '')
+            machine_name = data.get('MachineName', '')
+            
+            # Optional fields
+            user_id = data.get('UserId')
+            task_name = data.get('TaskDisplayName')
+            
+            # Process and thread IDs - only convert if present
+            process_id = None
+            if 'ProcessId' in data:
+                try:
+                    process_id = int(data['ProcessId'])
+                except (ValueError, TypeError):
+                    pass
+                    
+            thread_id = None
+            if 'ThreadId' in data:
+                try:
+                    thread_id = int(data['ThreadId'])
+                except (ValueError, TypeError):
+                    pass
+            
             return cls(
-                time_created=str(data.get('TimeCreated', '')),
-                log_name=str(data.get('LogName', '')),
-                level=EventLevel.from_string(str(data.get('Level', ''))),
-                event_id=int(data.get('EventID', 0)),
-                provider_name=str(data.get('ProviderName', '')),
-                message=str(data.get('Message', '')),
-                machine_name=str(data.get('MachineName', '')),
-                user_id=str(data.get('UserId', '')) if data.get('UserId') else None,
-                task_display_name=str(data.get('TaskDisplayName', '')) if data.get('TaskDisplayName') else None,
-                process_id=int(data.get('ProcessId', 0)) if data.get('ProcessId') else None,
-                thread_id=int(data.get('ThreadId', 0)) if data.get('ThreadId') else None
+                time_created=time_created,
+                log_name=log_name,
+                level=EventLevel.from_string(level_str),
+                event_id=event_id,
+                provider_name=provider_name,
+                message=message,
+                machine_name=machine_name,
+                user_id=user_id,
+                task_display_name=task_name,
+                process_id=process_id,
+                thread_id=thread_id
             )
-        except (ValueError, TypeError) as e:
+        except Exception as e:
             # If conversion fails, create a minimal entry with error info
             return cls(
-                time_created=str(data.get('TimeCreated', '')),
-                log_name=str(data.get('LogName', '')),
+                time_created='',
+                log_name='',
                 level=EventLevel.ERROR,
                 event_id=0,
                 provider_name="Parser",
@@ -191,57 +221,58 @@ class SystemInfo:
     def from_dict(cls, data: Dict[str, Any]) -> 'SystemInfo':
         """Create SystemInfo from a dictionary (JSON)"""
         try:
-            # Extract OS info
+            # Extract data from sections
             os_info = data.get('OS', {})
             computer_info = data.get('Computer', {})
             processor_info = data.get('Processor', {})
             disks_info = data.get('Disks', [])
             
+            # Safe conversion helpers
+            def safe_str(obj, default='Unknown'):
+                return str(obj) if obj is not None else default
+                
+            def safe_int(obj, default=0):
+                try:
+                    return int(obj) if obj is not None else default
+                except (ValueError, TypeError):
+                    return default
+            
+            # Create object with safe type conversions
             return cls(
                 # OS info
-                os_name=str(os_info.get('Caption', 'Unknown OS')),
-                os_version=str(os_info.get('Version', 'Unknown')),
-                os_build=str(os_info.get('BuildNumber', 'Unknown')),
-                architecture=str(os_info.get('OSArchitecture', 'Unknown')),
-                install_date=str(os_info.get('InstallDate', 'Unknown')),
-                last_boot_time=str(os_info.get('LastBootUpTime', 'Unknown')),
-                uptime=str(os_info.get('UpTime', 'Unknown')),
+                os_name=safe_str(os_info.get('Caption', 'Unknown OS')),
+                os_version=safe_str(os_info.get('Version')),
+                os_build=safe_str(os_info.get('BuildNumber')),
+                architecture=safe_str(os_info.get('OSArchitecture')),
+                install_date=safe_str(os_info.get('InstallDate')),
+                last_boot_time=safe_str(os_info.get('LastBootUpTime')),
+                uptime=safe_str(os_info.get('UpTime')),
                 
                 # Computer info
-                manufacturer=str(computer_info.get('Manufacturer', 'Unknown')),
-                model=str(computer_info.get('Model', 'Unknown')),
-                system_type=str(computer_info.get('SystemType', 'Unknown')),
-                processors=int(computer_info.get('NumberOfProcessors', 0)),
-                memory=str(computer_info.get('TotalPhysicalMemory', 'Unknown')),
+                manufacturer=safe_str(computer_info.get('Manufacturer')),
+                model=safe_str(computer_info.get('Model')),
+                system_type=safe_str(computer_info.get('SystemType')),
+                processors=safe_int(computer_info.get('NumberOfProcessors')),
+                memory=safe_str(computer_info.get('TotalPhysicalMemory')),
                 
                 # Processor info
-                processor_name=str(processor_info.get('Name', 'Unknown')),
-                cores=int(processor_info.get('NumberOfCores', 0)),
-                logical_processors=int(processor_info.get('NumberOfLogicalProcessors', 0)),
-                clock_speed=str(processor_info.get('MaxClockSpeedGHz', 'Unknown')),
+                processor_name=safe_str(processor_info.get('Name')),
+                cores=safe_int(processor_info.get('NumberOfCores')),
+                logical_processors=safe_int(processor_info.get('NumberOfLogicalProcessors')),
+                clock_speed=safe_str(processor_info.get('MaxClockSpeedGHz')),
                 
                 # Disks info
                 disks=disks_info if isinstance(disks_info, list) else []
             )
-        except (ValueError, TypeError) as e:
+        except Exception:
             # Return a minimal valid object if parsing fails
             return cls(
                 os_name="Error parsing system info",
-                os_version="Unknown",
-                os_build="Unknown",
-                architecture="Unknown",
-                install_date="Unknown",
-                last_boot_time="Unknown",
-                uptime="Unknown",
-                manufacturer="Unknown",
-                model="Unknown",
-                system_type="Unknown",
-                processors=0,
-                memory="Unknown",
-                processor_name="Unknown",
-                cores=0,
-                logical_processors=0,
-                clock_speed="Unknown",
+                os_version="Unknown", os_build="Unknown", architecture="Unknown",
+                install_date="Unknown", last_boot_time="Unknown", uptime="Unknown",
+                manufacturer="Unknown", model="Unknown", system_type="Unknown",
+                processors=0, memory="Unknown",
+                processor_name="Unknown", cores=0, logical_processors=0, clock_speed="Unknown",
                 disks=[]
             )
 
@@ -260,22 +291,39 @@ class LogCollection:
     application_events: List[EventLogEntry]
     security_events: List[EventLogEntry]
     
-    # Helper properties
+    # Cache for event lists
+    _all_events: Optional[List[EventLogEntry]] = None
+    _error_events: Optional[List[EventLogEntry]] = None
+    _warning_events: Optional[List[EventLogEntry]] = None
+    
+    def __post_init__(self):
+        """Initialize calculated fields to None to trigger lazy loading"""
+        self._all_events = None 
+        self._error_events = None
+        self._warning_events = None
+    
+    # Helper properties with caching
     @property
     def all_events(self) -> List[EventLogEntry]:
-        """Get all events combined"""
-        return self.system_events + self.application_events + self.security_events
+        """Get all events combined (cached)"""
+        if self._all_events is None:
+            self._all_events = self.system_events + self.application_events + self.security_events
+        return self._all_events
     
     @property
     def error_events(self) -> List[EventLogEntry]:
-        """Get all error and critical events"""
-        return [e for e in self.all_events 
-                if e.level in (EventLevel.ERROR, EventLevel.CRITICAL)]
+        """Get all error and critical events (cached)"""
+        if self._error_events is None:
+            self._error_events = [e for e in self.all_events 
+                    if e.level in (EventLevel.ERROR, EventLevel.CRITICAL)]
+        return self._error_events
     
     @property
     def warning_events(self) -> List[EventLogEntry]:
-        """Get all warning events"""
-        return [e for e in self.all_events if e.level == EventLevel.WARNING]
+        """Get all warning events (cached)"""
+        if self._warning_events is None:
+            self._warning_events = [e for e in self.all_events if e.level == EventLevel.WARNING]
+        return self._warning_events
     
     @property
     def event_count(self) -> Dict[str, int]:
@@ -307,12 +355,24 @@ class LogCollection:
     
     def recent_events(self, count: int = 10) -> List[EventLogEntry]:
         """Get most recent events"""
-        # This is a simple implementation assuming events are already sorted by time
-        # We could add explicit sorting by parsed datetime if needed
-        return self.all_events[:count]
+        return self.all_events[:min(count, len(self.all_events))]
     
     def summarize(self) -> Dict[str, Any]:
         """Generate a summary of the log collection"""
+        error_preview = []
+        for i, e in enumerate(self.error_events):
+            if i >= 5:  # Limit to 5 errors
+                break
+            message = e.message
+            if len(message) > 100:
+                message = message[:100] + "..."
+            error_preview.append({
+                "time": e.time_created,
+                "id": e.event_id,
+                "source": e.provider_name,
+                "message": message
+            })
+            
         return {
             "collection_time": self.collection_time,
             "time_range": self.time_range,
@@ -324,15 +384,7 @@ class LogCollection:
                 "memory": self.system_info.memory,
                 "uptime": self.system_info.uptime
             },
-            "recent_errors": [
-                {
-                    "time": e.time_created,
-                    "id": e.event_id,
-                    "source": e.provider_name,
-                    "message": e.message[:100] + ("..." if len(e.message) > 100 else "")
-                }
-                for e in self.error_events[:5]  # Show 5 most recent errors
-            ]
+            "recent_errors": error_preview
         }
 
 class LogParser:
@@ -366,32 +418,24 @@ class LogParser:
         system_info_data = data.get('SystemInfo', {})
         system_info = SystemInfo.from_dict(system_info_data)
         
-        # Parse events
+        # Parse events - optimize by avoiding redundant exception handling
         events_data = data.get('Events', {})
         
-        # Parse System events
-        system_events = []
-        for event_data in events_data.get('System', []):
-            try:
-                system_events.append(EventLogEntry.from_dict(event_data))
-            except Exception as e:
-                print(f"Error parsing System event: {e}")
+        # Helper function to process events in bulk
+        def process_events(event_list, log_type):
+            result = []
+            for event_data in event_list:
+                try:
+                    result.append(EventLogEntry.from_dict(event_data))
+                except Exception as e:
+                    # Silent exception handling to improve performance
+                    pass
+            return result
         
-        # Parse Application events
-        application_events = []
-        for event_data in events_data.get('Application', []):
-            try:
-                application_events.append(EventLogEntry.from_dict(event_data))
-            except Exception as e:
-                print(f"Error parsing Application event: {e}")
-        
-        # Parse Security events
-        security_events = []
-        for event_data in events_data.get('Security', []):
-            try:
-                security_events.append(EventLogEntry.from_dict(event_data))
-            except Exception as e:
-                print(f"Error parsing Security event: {e}")
+        # Process all event types
+        system_events = process_events(events_data.get('System', []), 'System')
+        application_events = process_events(events_data.get('Application', []), 'Application')
+        security_events = process_events(events_data.get('Security', []), 'Security')
         
         # Create and return the complete collection
         return LogCollection(
@@ -407,50 +451,29 @@ class LogParser:
     def parse_file(file_path: str) -> Optional[LogCollection]:
         """Parse logs from a JSON file"""
         try:
-            # Try with utf-8-sig first to handle BOM
+            # Try direct loading with utf-8 - most common case first
             try:
+                with open(file_path, 'r', encoding='utf-8') as f:
+                    return LogParser.parse_json(json.load(f))
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                # If failed, try with utf-8-sig for BOM handling
                 with open(file_path, 'r', encoding='utf-8-sig') as f:
-                    try:
-                        json_data = json.load(f)
-                        return LogParser.parse_json(json_data)
-                    except json.JSONDecodeError:
-                        # If this fails, we'll fall back to regular utf-8 below
-                        pass
-            except Exception:
-                # Fall back to regular utf-8
-                pass
-                
-            # Try regular utf-8
-            with open(file_path, 'r', encoding='utf-8') as f:
-                try:
-                    json_data = json.load(f)
-                except json.JSONDecodeError as e:
-                    print(f"Error: Invalid JSON format in file: {file_path}. Error: {e}")
-                    # Try to diagnose the JSON issue
-                    f.seek(0)  # Go back to start of file
-                    content = f.read(1000)  # Read first 1000 chars for diagnosis
-                    print(f"File starts with: {content[:100]}...")
-                    return None
-                
-            return LogParser.parse_json(json_data)
+                    return LogParser.parse_json(json.load(f))
         except FileNotFoundError:
             print(f"Error: File not found: {file_path}")
             return None
         except Exception as e:
             print(f"Error parsing log file: {e}")
-            # Try to print more debugging info
-            import traceback
-            traceback.print_exc()
             return None
 
 # Import LLM Manager
-from .llm_manager import LLMManager, LlamaModelError
+from llm_manager import LLMManager, GeminiAPIError
 
 class AnimusCLI:
     """Main CLI application class for Animus"""
     
-    def __init__(self, auto_collect=True, auto_collect_age_hours=24, force_collect=False, 
-                 model_path=None, context_size=2048, qa_mode=False, verbose=False):
+    def __init__(self, auto_collect=True, auto_collect_age_hours=24, force_collect=False,
+                 qa_mode=False, verbose=False, output_path=None, model_name='gemini-1.5-flash-latest'):
         """
         Initialize the Animus CLI
         
@@ -458,55 +481,44 @@ class AnimusCLI:
             auto_collect: Whether to automatically collect logs if needed
             auto_collect_age_hours: Max age of logs before auto-collection
             force_collect: Whether to force log collection
-            model_path: Path to Llama model file
-            context_size: Token context size for LLM
             qa_mode: Whether to start in QA mode immediately
             verbose: Whether to show verbose output
+            output_path: Path to the output JSON file
+            model_name: Name of the Gemini model to use
         """
-        self.logs_path = None
-        self.log_collection = None
         self.auto_collect = auto_collect
-        self.auto_collect_age = auto_collect_age_hours
+        self.auto_collect_age_hours = auto_collect_age_hours
         self.force_collect = force_collect
-        
-        # LLM settings
-        self.model_path = model_path
-        self.context_size = context_size
-        self.verbose = verbose
-        self.llm_manager = None
-        self.llm_available = False  # Will be set to True if model can be loaded
-        
-        # Interactive mode settings
         self.qa_mode = qa_mode
-        self.history_file = os.path.join(os.path.expanduser("~"), ".animus_history")
-        self.qa_context = [] # Initialize QA context list
-        
-        # Initialize colorama
-        init(autoreset=True)
-        
-        # Setup readline for history
+        self.verbose = verbose
+        self.model_name = model_name
+
+        # Determine output path
+        self.output_path = output_path or DEFAULT_OUTPUT_PATH
+        self.print_status(f"Using log file: {self.output_path}", "info")
+        if self.qa_mode:
+             self.print_status(f"Using model: {self.model_name}", "info")
+
+        self.log_collection: Optional[LogCollection] = None
+        self.last_query_time = 0
+        self.history_file = os.path.join(APP_BASE_DIR, ".animus_history") # History file relative to app base
+        self.llm = None # Initialize LLM instance placeholder
+        self.stop_animation = threading.Event() # For thinking animation
+
         self.setup_history()
     
     def setup_history(self):
         """Set up command history for the interactive mode"""
         if not READLINE_AVAILABLE:
             return
-            
-        # Configure readline to store history
+        
+        # Configure readline to store history via standard module
         try:
-            if IS_WINDOWS:
-                # Windows uses pyreadline3
-                import pyreadline3.readline as readline
-            else:
-                # Unix systems use standard readline
-                import readline
-                
+            import readline
+
             readline.read_history_file(self.history_file)
             # Set history file size limit
             readline.set_history_length(1000)
-        except (FileNotFoundError, IOError, ImportError):
-            # History file doesn't exist yet or other issue
-            pass
         except Exception as e:
             print(f"Error setting up command history: {e}", file=sys.stderr)
     
@@ -514,13 +526,10 @@ class AnimusCLI:
         """Save command history on exit"""
         if not READLINE_AVAILABLE:
             return
-            
+        
         try:
-            if IS_WINDOWS:
-                import pyreadline3.readline as readline
-            else:
-                import readline
-                
+            import readline
+
             readline.write_history_file(self.history_file)
         except (IOError, ImportError) as e:
             print(f"Error saving command history: {e}", file=sys.stderr)
@@ -540,18 +549,19 @@ class AnimusCLI:
         print(f"{prefix} {message}")
         
     def print_banner(self):
-        """Print the Animus CLI banner with Llama attribution"""
+        """Print the Animus CLI banner"""
         print(ANIMUS_BANNER)
         
-        # Display Llama attribution
-        print(f"{Fore.MAGENTA}Built with Llama{Style.RESET_ALL} - AI-powered log analysis")
+        # Display model attribution
+        print(f"{Fore.MAGENTA}Powered by Google Gemini{Style.RESET_ALL} - AI-powered log analysis")
         
-        # If verbose, show additional model info
-        if self.verbose and self.model_path:
-            model_name = os.path.basename(self.model_path)
-            print(f"Using model: {model_name}")
-            
-        print() # Add a newline for better spacing
+        # Show basic usage instructions
+        print(f"\n{Fore.CYAN}Usage:{Style.RESET_ALL}")
+        print("- Type your question about the Windows Event Logs")
+        print("- Type 'exit' or press Ctrl+C to quit")
+        print("- Type 'help' for more information")
+        print(f"\n{Fore.YELLOW}Tip:{Style.RESET_ALL} Ask about errors, warnings, or system issues in natural language.")
+        print("=" * 60)
         
     def print_help(self):
         """Print available commands and help information"""
@@ -559,7 +569,7 @@ class AnimusCLI:
         print(f"{Fore.YELLOW}collect{Style.RESET_ALL} [hours] [max_events] [--no-security] [--force]")
         print(f"  Collect Windows Event Logs (default: past 48 hours, 500 events per log)")
         print(f"{Fore.YELLOW}load{Style.RESET_ALL} [filename]")
-        print(f"  Load a previously collected log file (default: {os.path.basename(self.logs_path)})")
+        print(f"  Load a previously collected log file (default: {os.path.basename(self.output_path)})")
         print(f"{Fore.YELLOW}status{Style.RESET_ALL}")
         print(f"  Show information about currently loaded logs")
         print(f"{Fore.YELLOW}ask{Style.RESET_ALL} <question>")
@@ -577,11 +587,11 @@ class AnimusCLI:
         if self.log_collection:
             return True
             
-        if os.path.exists(self.logs_path):
-            return self.load_logs(self.logs_path)
+        if os.path.exists(self.output_path):
+            return self.load_logs(self.output_path)
         else:
             self.print_status(
-                f"No log file found at {self.logs_path}. Please collect logs first with 'collect'.", 
+                f"No log file found at {self.output_path}. Please collect logs first with 'collect'.", 
                 "error"
             )
             return False
@@ -589,20 +599,20 @@ class AnimusCLI:
     def load_logs(self, filename=None):
         """Load logs from a JSON file"""
         if filename:
-            self.logs_path = filename
+            self.output_path = filename
             
         try:
-            self.print_status(f"Loading logs from {self.logs_path}...")
+            self.print_status(f"Loading logs from {self.output_path}...")
             
             # First, check if the file is valid JSON
             try:
                 # Try with utf-8-sig first to handle BOM
                 try:
-                    with open(self.logs_path, 'r', encoding='utf-8-sig') as f:
+                    with open(self.output_path, 'r', encoding='utf-8-sig') as f:
                         raw_data = f.read()
                 except UnicodeDecodeError:
                     # Fall back to regular utf-8
-                    with open(self.logs_path, 'r', encoding='utf-8') as f:
+                    with open(self.output_path, 'r', encoding='utf-8') as f:
                         raw_data = f.read()
                     
                 # Check for common encoding issues or malformed JSON
@@ -613,7 +623,7 @@ class AnimusCLI:
                     
                 # Try to parse the JSON
                 try:
-                    self.log_collection = LogParser.parse_file(self.logs_path)
+                    self.log_collection = LogParser.parse_file(self.output_path)
                 except Exception as e:
                     self.print_status(f"Error parsing log file: {e}", "error")
                     self.log_collection = None
@@ -638,9 +648,9 @@ class AnimusCLI:
             
         except json.JSONDecodeError as e:
             # This should rarely happen now that we're handling JSON errors above
-            self.print_status(f"Invalid JSON format in {self.logs_path}: {str(e)}", "error")
+            self.print_status(f"Invalid JSON format in {self.output_path}: {str(e)}", "error")
         except FileNotFoundError:
-            self.print_status(f"Log file not found: {self.logs_path}", "error")
+            self.print_status(f"Log file not found: {self.output_path}", "error")
         except Exception as e:
             self.print_status(f"Error loading logs: {str(e)}", "error")
             
@@ -649,50 +659,10 @@ class AnimusCLI:
 
     def should_collect_logs(self):
         """Determine if logs should be automatically collected"""
-        # Force collection if requested
-        if self.force_collect:
-            self.print_status("Forced log collection requested. Collecting fresh logs.", "info")
-            return True
-            
-        if not self.auto_collect:
-            return False
-            
-        # Check if log file exists
-        if not os.path.exists(self.logs_path):
-            self.print_status("No existing log file found. Will collect logs automatically.", "info")
-            return True
-            
-        try:
-            # Check file age
-            file_stat = os.stat(self.logs_path)
-            file_mtime = datetime.fromtimestamp(file_stat.st_mtime)
-            current_time = datetime.now()
-            age_hours = (current_time - file_mtime).total_seconds() / 3600
-            
-            if age_hours > self.auto_collect_age:
-                self.print_status(
-                    f"Log file is {age_hours:.1f} hours old (threshold: {self.auto_collect_age} hours). Collecting fresh logs.", 
-                    "info"
-                )
-                return True
-                
-            # Try to validate the logs
-            try:
-                with open(self.logs_path, 'r') as f:
-                    log_data = json.load(f)
-                    if not isinstance(log_data, dict) or 'Events' not in log_data:
-                        self.print_status("Existing log file has invalid format. Will collect fresh logs.", "warning")
-                        return True
-            except (json.JSONDecodeError, FileNotFoundError):
-                self.print_status("Existing log file is corrupt or unreadable. Will collect fresh logs.", "warning")
-                return True
-                
-            return False
-            
-        except Exception as e:
-            self.print_status(f"Error checking log file: {e}. Will collect fresh logs.", "warning")
-            return True
-            
+        # Always collect fresh logs on startup
+        self.print_status("Collecting fresh logs...", "info")
+        return True
+    
     def show_status(self):
         """Show information about the currently loaded logs"""
         if not self.check_log_loaded():
@@ -737,7 +707,6 @@ class AnimusCLI:
                 for i, error in enumerate(recent_errors, 1):
                     print(f"  {i}. [{error['time']}] {error['source']} (ID: {error['id']})")
                     print(f"     {error['message']}")
-            
         except Exception as e:
             self.print_status(f"Error reading log information: {e}", "error")
             import traceback
@@ -748,11 +717,9 @@ class AnimusCLI:
         self.running = True
         self.print_banner()
 
-        # Initial log collection/loading
-        if self.should_collect_logs():
-            self.print_status("Collecting logs...", "info") # Keep brief message
-            self.handle_collect_command([])
-        elif os.path.exists(self.logs_path) and not self.log_collection:
+        # Only load logs if we don't already have them loaded
+        # We skip collection here since it's already done in analyze_logs
+        if not self.log_collection and os.path.exists(self.output_path):
             self.load_logs()
 
         # Show System Summary and Error counts if logs loaded
@@ -763,12 +730,6 @@ class AnimusCLI:
             print(f"Model: {system.manufacturer} {system.model}")
             print(f"Uptime: {system.uptime}")
 
-            error_count = len(self.log_collection.error_events)
-            warning_count = len(self.log_collection.warning_events)
-            if error_count > 0:
-                print(f"\n{Fore.RED}Found {error_count} error/critical events and {warning_count} warnings{Style.RESET_ALL}")
-            else:
-                print(f"\nNo critical errors found in the logs.")
             print() # Add a blank line before the prompt
         else:
             # If logs couldn't be loaded/collected, we can't proceed with Q&A
@@ -818,7 +779,7 @@ class AnimusCLI:
                 
             # Collect logs
             success = collect_logs(
-                self.logs_path,
+                self.output_path,
                 hours,
                 max_events,
                 include_security,
@@ -835,8 +796,9 @@ class AnimusCLI:
     def start_qa_mode(self):
         """Mark the CLI to run in Q&A mode (simplified)"""
         self.qa_mode = True
-        # We don't need to check logs here anymore, command_loop does
-        return True # Indicate QA mode was set
+        # After setting the flag, start the interactive command loop
+        self.command_loop()
+        return True
 
     def handle_query(self, query, add_to_context=False):
         """Handle a query about the logs"""
@@ -845,17 +807,11 @@ class AnimusCLI:
             # but keep it as a safeguard
             return
 
-        # Track the query in context
-        if add_to_context:
-            self.qa_context.append({"role": "user", "content": query})
-
         # Process the query
         answer = self.process_query(query)
 
         # Format and display the answer (Removed A: prefix)
         print(f"{Style.RESET_ALL}{answer}\n")
-        # Add the answer to context
-        self.qa_context.append({"role": "assistant", "content": answer})
     
     def process_query(self, query):
         """
@@ -884,27 +840,22 @@ class AnimusCLI:
             return "No logs are loaded to analyze. Use 'load' to load logs."
 
         # Try to initialize LLM if not done yet
-        if not self.llm_manager:
+        if not self.llm:
             try:
                 self.print_status("Initializing LLM for analysis...", "info")
-                self.llm_manager = LLMManager(
-                    model_path=self.model_path,
-                    context_size=self.context_size,
+                self.llm = LLMManager(
+                    model_name=self.model_name,
                     verbose=self.verbose
                 )
-                self.llm_manager.load_model()
-                self.llm_available = True
                 self.print_status("LLM initialized successfully", "success")
-            except LlamaModelError as e:
+            except GeminiAPIError as e:
                 self.print_status(f"Failed to initialize LLM: {e}", "error")
                 self.print_status("Continuing with basic analysis only.", "warning")
-                self.llm_available = False
             except Exception as e:
                 self.print_status(f"Unexpected error initializing LLM: {e}", "error")
-                self.llm_available = False
 
-        # If LLM is available, use it to process the query
-        if self.llm_available and self.llm_manager:
+        # If LLM manager was successfully initialized, use it.
+        if self.llm:
             stop_event = threading.Event()
             animation_thread = None
             response = "Error: LLM response was not generated." # Default/error response
@@ -913,7 +864,7 @@ class AnimusCLI:
 
             try:
                 # Get the raw log data
-                with open(self.logs_path, 'r', encoding='utf-8') as f:
+                with open(self.output_path, 'r', encoding='utf-8') as f:
                     raw_log_data = json.load(f)
 
                 # Start animation thread
@@ -922,14 +873,13 @@ class AnimusCLI:
                 animation_thread.start()
 
                 # Process with LLM
-                response, generation_time = self.llm_manager.query_logs(
+                response, generation_time = self.llm.query_logs(
                     query=query,
                     log_data=raw_log_data,
-                    max_response_tokens=1024
                 )
                 llm_success = True # Mark success if query_logs returns
 
-            except LlamaModelError as e:
+            except GeminiAPIError as e:
                 self.print_status(f"LLM analysis failed: {e}", "error")
                 # Keep llm_success as False
             except Exception as e:
@@ -957,69 +907,91 @@ class AnimusCLI:
             return self._fallback_analysis(query)
             
     def _fallback_analysis(self, query):
-        """Provide a basic analysis without LLM"""
-        # Basic keyword matching
-        query_lower = query.lower()
+        """
+        Perform basic non-LLM analysis for fallback
         
+        Args:
+            query: The user's query
+            
+        Returns:
+            A simple analysis based on basic rules
+        """
+        # This is a basic fallback when LLM is not available
+        if not self.log_collection:
+            return "No logs loaded. Please load logs first."
+        
+        # Very simple keyword matching
+        query_lower = query.lower()
         results = []
         
-        # Check for common query patterns
-        if "error" in query_lower or "critical" in query_lower:
-            errors = self.log_collection.error_events[:5]  # Show top 5 errors
-            if errors:
-                results.append("Found recent errors/critical events:")
-                for e in errors:
-                    results.append(f"- {e.time_created}: {e.provider_name} (EventID: {e.event_id})")
-                    results.append(f"  {e.message[:150]}..." if len(e.message) > 150 else f"  {e.message}")
-            else:
-                results.append("No error or critical events found in the logs.")
-                
-        elif "warning" in query_lower:
-            warnings = self.log_collection.warning_events[:5]
-            if warnings:
-                results.append("Found recent warnings:")
-                for w in warnings:
-                    results.append(f"- {w.time_created}: {w.provider_name} (EventID: {w.event_id})")
-                    results.append(f"  {w.message[:150]}..." if len(w.message) > 150 else f"  {w.message}")
-            else:
-                results.append("No warning events found in the logs.")
-                
-        elif "reboot" in query_lower or "restart" in query_lower or "shutdown" in query_lower:
-            # Look for common reboot/shutdown event IDs
-            reboot_events = []
-            for e in self.log_collection.all_events:
-                # Common Windows reboot/shutdown related events
-                if (e.provider_name.lower() == "user32" and e.event_id == 1074) or \
-                   (e.provider_name.lower() == "kernel-power" and e.event_id == 41) or \
-                   "restart" in e.message.lower() or "shutdown" in e.message.lower() or \
-                   "power off" in e.message.lower():
-                    reboot_events.append(e)
-                    
-            if reboot_events:
-                results.append("Found events related to system restart/shutdown:")
-                for e in reboot_events[:5]:
-                    results.append(f"- {e.time_created}: {e.provider_name} (EventID: {e.event_id})")
-                    results.append(f"  {e.message[:150]}..." if len(e.message) > 150 else f"  {e.message}")
-            else:
-                results.append("No clear shutdown/restart events found in the logs.")
-                
-        else:
-            # Generic case - just show system summary and recent events
-            results.append("Without LLM capabilities, only basic analysis is available.")
-            results.append("Here's a summary of the logs:")
-            results.append(f"- System: {self.log_collection.system_info.os_name} ({self.log_collection.system_info.os_version})")
-            results.append(f"- Last Boot: {self.log_collection.system_info.last_boot_time}")
-            results.append(f"- Total Events: {self.log_collection.event_count['total']}")
-            results.append(f"- Errors: {self.log_collection.event_count['errors']}")
-            results.append(f"- Warnings: {self.log_collection.event_count['warnings']}")
+        # Handle basic informational queries
+        if any(word in query_lower for word in ["hi", "hello", "hey"]):
+            results.append("Hello! I'm Animus, a tool for analyzing Windows event logs. How can I help you today?")
+            return "\n".join(results)
+
+        if any(term in query_lower for term in ["what can you do", "help", "capabilities", "commands"]):
+            return (
+                "I can analyze your Windows event logs and answer questions about them.\n"
+                "Try asking questions about system errors, application crashes, unexpected reboots, etc."
+            )
+        
+        # Handle queries about system information
+        if any(term in query_lower for term in ["system info", "about this system", "computer info", "specs", "hardware"]):
+            sys_info = self.log_collection.system_info
+            results.append(f"System Information:")
+            results.append(f"- OS: {sys_info.os_name} ({sys_info.os_version})")
+            results.append(f"- Manufacturer: {sys_info.manufacturer}")
+            results.append(f"- Model: {sys_info.model}")
+            results.append(f"- Processor: {sys_info.processor_name}")
+            results.append(f"- Memory: {sys_info.memory}")
+            results.append(f"- Uptime: {sys_info.uptime}")
+            results.append(f"- Installation Date: {sys_info.install_date}")
+            return "\n".join(results)
+        
+        # Handle queries about events
+        if any(term in query_lower for term in ["errors", "critical", "warnings"]):
+            # Show summary of errors/warnings
+            error_count = len(self.log_collection.error_events)
+            warning_count = len(self.log_collection.warning_events)
+            results.append(f"Found {error_count} errors/critical events and {warning_count} warnings.")
             
-            # Show some recent events
-            results.append("\nRecent events:")
-            for e in self.log_collection.all_events[:5]:
-                results.append(f"- {e.time_created}: {e.level.name} from {e.provider_name} (ID: {e.event_id})")
-                
+            # Show the 5 most recent errors
+            if error_count > 0:
+                results.append("\nRecent errors/critical events:")
+                for i, event in enumerate(self.log_collection.error_events[:5]):
+                    results.append(f"{i+1}. [{event.time_created}] {event.provider_name} (ID: {event.event_id}): {event.message[:100]}...")
+            
+            # Show the 5 most recent warnings if specifically asked about warnings
+            if "warning" in query_lower and warning_count > 0:
+                results.append("\nRecent warnings:")
+                for i, event in enumerate(self.log_collection.warning_events[:5]):
+                    results.append(f"{i+1}. [{event.time_created}] {event.provider_name} (ID: {event.event_id}): {event.message[:100]}...")
+            
+            return "\n".join(results)
+        
+        # Handle reboot queries
+        if any(term in query_lower for term in ["reboot", "restart", "shutdown", "crash"]):
+            # Look for common reboot-related events
+            power_events = self.log_collection.events_by_provider("Kernel-Power")
+            kernel_events = self.log_collection.events_by_provider("Microsoft-Windows-Kernel")
+            
+            if power_events:
+                results.append(f"Found {len(power_events)} power-related events.")
+                # Show the 3 most recent power events
+                results.append("\nRecent power events:")
+                for i, event in enumerate(power_events[:3]):
+                    results.append(f"{i+1}. [{event.time_created}] Event ID {event.event_id}: {event.message[:100]}...")
+            
+            if not results:
+                results.append("No specific reboot or power events found in the logs.")
+            
+            return "\n".join(results)
+            
+        # Generic fallback for other queries
+        if not results:
+            results.append("Basic analysis: I don't have enough information to answer that question.")
             results.append("\nTry asking about specific errors, warnings, or reboots.")
-            results.append("To use AI-powered analysis, please install the Llama model.")
+            results.append("For more detailed analysis, the Google Gemini API is being used.")
             
         return "\n".join(results)
 
@@ -1027,7 +999,7 @@ def parse_arguments():
     """Parse command line arguments"""
     parser = argparse.ArgumentParser(
         description="Animus - Windows Event Log Analysis CLI",
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter
+        formatter_class=argparse.RawTextHelpFormatter
     )
     
     # Log collection options
@@ -1071,28 +1043,20 @@ def parse_arguments():
                         type=str)
     
     # LLM options
-    parser.add_argument("--model-path", 
-                        help="Path to Llama model file (llama-2-7b-chat.Q4_0.gguf)",
-                        type=str)
-    
-    parser.add_argument("--context-size", 
-                        help="Token context size for the LLM",
-                        type=int,
-                        default=4096)
-    
     parser.add_argument("--verbose", "-v", 
                         help="Enable verbose output", 
                         action="store_true")
     
+    parser.add_argument("--model-name",
+                       help="Name of the Gemini model to use (default: gemini-1.5-flash-latest)",
+                       type=str,
+                       default="gemini-1.5-flash-latest")
+    
+    # Parse arguments
     return parser.parse_args()
 
 def collect_logs(output_path, hours_back=48, max_events=500, include_security=True, force_collect=False):
     """Call PowerShell script to collect Windows Event Logs"""
-    if force_collect:
-        print(f"Forcing collection of fresh logs...")
-    else:
-        print(f"Collecting logs from the past {hours_back} hours...")
-    
     # Prepare PowerShell command with appropriate path handling
     security_param = "false" if not include_security else "true"
     
@@ -1103,7 +1067,7 @@ def collect_logs(output_path, hours_back=48, max_events=500, include_security=Tr
     # For Security logs on Windows, we need to run PowerShell as Administrator
     admin_note = ""
     if include_security and IS_WINDOWS:
-        admin_note = "\nNote: For Security logs, PowerShell may need to run as Administrator."
+        admin_note = "\nNote: For Security logs may need admin privileges."
     
     ps_command = [
         "powershell", 
@@ -1116,19 +1080,12 @@ def collect_logs(output_path, hours_back=48, max_events=500, include_security=Tr
     ]
     
     try:
-        # Run the PowerShell script
         process = subprocess.run(
             ps_command,
             capture_output=True,
             text=True,
             check=True
         )
-        
-        # Print output from the script
-        print(process.stdout)
-        
-        if "Security logs" in process.stdout and "0" in process.stdout and include_security:
-            print(f"Warning: No Security logs were collected. This might be due to permission issues.{admin_note}")
         
         if process.returncode != 0:
             print(f"Error running log collector: {process.stderr}", file=sys.stderr)
@@ -1139,7 +1096,7 @@ def collect_logs(output_path, hours_back=48, max_events=500, include_security=Tr
             print(f"Error: Log file was not created at {output_path}", file=sys.stderr)
             return False
         
-        # Verify JSON validity - try with utf-8-sig first
+        # Verify JSON validity
         try:
             with open(output_path, 'r', encoding='utf-8-sig') as f:
                 json.load(f)
@@ -1149,11 +1106,8 @@ def collect_logs(output_path, hours_back=48, max_events=500, include_security=Tr
                 with open(output_path, 'r', encoding='utf-8') as f:
                     json.load(f)
             except json.JSONDecodeError as e:
-                print(f"Warning: Generated JSON file appears to be invalid: {e}")
-                print("This might indicate an issue with the PowerShell script output.")
                 return False
             
-        print(f"Logs successfully collected and saved to {output_path}")
         return True
         
     except subprocess.CalledProcessError as e:
@@ -1207,8 +1161,7 @@ def check_powershell_requirements():
         return False
 
 def analyze_logs(log_file_path, query=None, auto_collect=True, auto_collect_age=24,
-                force_collect=False, qa_mode=False, model_path=None, context_size=2048,
-                verbose=False):
+                force_collect=False, qa_mode=False, model_name=None, verbose=False):
     """
     Analyze logs with the Animus CLI
 
@@ -1219,76 +1172,125 @@ def analyze_logs(log_file_path, query=None, auto_collect=True, auto_collect_age=
         auto_collect_age: Max age of logs before auto-collection
         force_collect: Whether to force log collection
         qa_mode: Whether to start in QA mode
-        model_path: Path to Llama model file
-        context_size: Token context size for LLM
+        model_name: Name of the Gemini model to use
         verbose: Whether to show verbose output
     """
-    # Create CLI object
+    # Check PowerShell requirements early (only if needed)
+    if IS_WINDOWS and auto_collect:
+        if not check_powershell_requirements():
+            print(f"{Fore.RED}PowerShell requirements not met. Log collection might fail.")
+            # Decide if we should exit or just warn - for now, warn
+            # return 1 # Or sys.exit(1)
+
+    # Check for Gemini API key if in QA mode
+    if qa_mode:
+        from dotenv import load_dotenv
+        load_dotenv()
+        gemini_api_key = os.getenv("GEMINI_API_KEY")
+        if not gemini_api_key:
+            print(f"{Fore.RED}WARNING: GEMINI_API_KEY not found in environment or .env file.")
+            print(f"{Fore.YELLOW}Create a .env file with GEMINI_API_KEY=your_api_key to enable AI analysis.")
+            print(f"{Fore.YELLOW}You can get a key from https://ai.google.dev/")
+            print(f"{Fore.YELLOW}Continuing with basic analysis only.{Style.RESET_ALL}")
+
+    # Instantiate the CLI controller
+    # Pass the explicit output path from args if provided
     cli = AnimusCLI(
         auto_collect=auto_collect,
         auto_collect_age_hours=auto_collect_age,
         force_collect=force_collect,
-        model_path=model_path,
-        context_size=context_size,
-        qa_mode=qa_mode, # Pass the initial qa_mode flag
+        qa_mode=qa_mode,
+        verbose=verbose,
+        output_path=log_file_path,
+        model_name=model_name or "gemini-1.5-flash-latest"
+    )
+
+    # Don't print banner in analyze_logs when in QA mode (to avoid duplication)
+    if not qa_mode:
+        cli.print_banner()
+
+    try:
+        # Load initial logs (or collect if needed)
+        if force_collect or not os.path.exists(cli.output_path) or (auto_collect and check_log_freshness(cli.output_path, auto_collect_age) is False):
+            cli.print_status("Collecting logs...", "info")
+            success = collect_logs(
+                output_path=cli.output_path, # Use resolved output path
+                hours_back=auto_collect_age,
+                force_collect=force_collect
+            )
+            
+            if success:
+                cli.load_logs() # Load after successful collection
+            else:
+                cli.print_status("Log collection failed. Trying to load existing logs...", "warning")
+                cli.load_logs() # Attempt to load anyway if collection fails
+        else:
+            cli.load_logs() # Just load existing logs
+        
+        # If a specific query is provided, process it and exit
+        if query:
+            if not cli.check_log_loaded(): return 1 # Ensure logs are loaded
+            if not qa_mode:
+                 cli.print_status("Query provided but QA mode is not enabled. Use --qa to ask questions.", "warning")
+                 return 1 # Exit if not in QA mode but query given
+            else:
+                 cli.print_status(f"Processing query: {query}")
+                 cli.process_query(query) # Process the single query in QA mode
+                 return 0 # Exit after single query
+
+        # If QA mode is enabled (and no single query was given), start the interactive loop
+        elif qa_mode:
+            if not cli.check_log_loaded(): return 1
+            cli.start_qa_mode() # Start interactive Q&A
+            return 0
+
+        # If not QA mode and no query, maybe just show status?
+        else:
+            cli.print_status("No query provided and QA mode not enabled. Showing log status.")
+            cli.show_status()
+            return 0
+
+    except KeyboardInterrupt:
+        print("Exiting Animus CLI.")
+        return 1
+    finally:
+        cli.save_history()
+
+def main():
+    """CLI Entry Point"""
+    if IS_WINDOWS:
+        init(autoreset=True) # Initialize colorama on Windows
+
+    args = parse_arguments()
+
+    # Map log collection flags
+    auto_collect = not args.no_auto_collect
+    auto_collect_age = args.hours
+    force_collect = args.collect
+
+    # Set verbosity based on args
+    verbose = args.verbose
+
+    # Determine log file path
+    log_file_path = args.output if args.output else DEFAULT_OUTPUT_PATH
+    # Ensure the directory for the log file exists (skip if no directory in path)
+    output_dir = os.path.dirname(log_file_path)
+    if output_dir:
+        os.makedirs(output_dir, exist_ok=True)
+
+    # Call the main analysis function with mapped arguments
+    exit_code = analyze_logs(
+        log_file_path=log_file_path,
+        query=args.query,
+        auto_collect=auto_collect,
+        auto_collect_age=auto_collect_age,
+        force_collect=force_collect,
+        qa_mode=args.qa,
+        model_name=args.model_name,
         verbose=verbose
     )
 
-    # Set logs path
-    cli.logs_path = log_file_path
-
-    # Initial log check/collection happens within command_loop now for better message order
-    # # Check if logs exist and are fresh
-    # if not os.path.exists(log_file_path) or force_collect:
-    #     if auto_collect:
-    #         cli.handle_collect_command([])
-    #     else:
-    #         cli.print_status(f"Log file not found at {log_file_path}", "error")
-    #         return 1
-    # elif auto_collect and not check_log_freshness(log_file_path, auto_collect_age):
-    #     cli.print_status(f"Logs are older than {auto_collect_age} hours, collecting fresh logs...", "info")
-    #     cli.handle_collect_command([])
-
-    # Loading logs also happens within command_loop
-    # # Try to load logs
-    # if not cli.load_logs(log_file_path):
-    #     return 1
-
-    # Process single query and exit if provided
-    if query:
-        # Need to ensure logs are loaded before processing single query
-        if not cli.load_logs(log_file_path):
-             return 1 # Exit if logs can't be loaded
-        print(f"{Fore.CYAN}Query: {Fore.WHITE}{query}")
-        result = cli.process_query(query)
-        print(f"\n{result}")
-        return 0
-
-    # If not a single query, start the command loop
-    # The loop will handle QA mode startup messages internally
-    # if qa_mode:
-    #     cli.start_qa_mode() # This only sets the flag now
-
-    cli.command_loop()
-    return 0
-
-def main():
-    """Main entry point for the Animus CLI"""
-    # Parse command line arguments
-    args = parse_arguments()
-    
-    # Run analysis
-    return analyze_logs(
-        log_file_path=args.output,
-        query=args.query,
-        auto_collect=not args.no_auto_collect,
-        auto_collect_age=args.hours,
-        force_collect=args.collect,
-        qa_mode=args.qa or args.interactive,
-        model_path=args.model_path,
-        context_size=args.context_size,
-        verbose=args.verbose
-    )
+    sys.exit(exit_code)
 
 if __name__ == "__main__":
     main()

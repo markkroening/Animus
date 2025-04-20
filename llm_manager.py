@@ -1,9 +1,7 @@
 #!/usr/bin/env python3
 """
-Animus CLI - LLM Manager Module
-
 This module handles the integration with the Google Gemini API 
-using the google-genai SDK.
+using the google-generativeai SDK.
 """
 
 import os
@@ -12,7 +10,7 @@ import json
 import logging
 from typing import Dict, Any, Optional, Tuple
 from dotenv import load_dotenv
-from google import genai
+import google.generativeai as genai
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -27,14 +25,14 @@ class GeminiAPIError(Exception):
 
 class LLMManager:
     """Manager class for Google Gemini API integration"""
-    
-    def __init__(self, 
-                 model_name: str = 'gemini-1.5-flash-latest', 
+
+    def __init__(self,
+                 model_name: str = 'gemini-1.5-flash-latest',
                  api_key: Optional[str] = None,
                  verbose: bool = False):
         """
         Initialize the LLM Manager for Gemini.
-        
+
         Args:
             model_name: The Gemini model to use (e.g., 'gemini-1.5-flash-latest').
             api_key: Google API Key. If None, uses GEMINI_API_KEY from .env.
@@ -43,54 +41,56 @@ class LLMManager:
         self.model_name = model_name
         self.api_key = api_key or GEMINI_API_KEY
         self.verbose = verbose
-        self.client = None
-        
+
         if not self.api_key:
-             raise GeminiAPIError("Gemini API Key not found. Please set GEMINI_API_KEY in your .env file or provide it during initialization.")
-             
-        # Create the client instance
+            raise GeminiAPIError("Gemini API Key not found. Please set GEMINI_API_KEY in your .env file or provide it during initialization.")
+        
+        # Configure the genai module
         try:
-            self.client = genai.Client(api_key=self.api_key)
+            genai.configure(api_key=self.api_key)
             if self.verbose:
-                 logger.info(f"Using model: {self.model_name}")
+                logger.info(f"Using model: {self.model_name}")
+            
+            # Create a model instance
+            self.model = genai.GenerativeModel(model_name=self.model_name)
         except Exception as e:
-             raise GeminiAPIError(f"Failed to create Gemini client: {e}") from e
-             
-        # System context for prompts
+            raise GeminiAPIError(f"Failed to create Gemini model: {e}") from e
+
+        # System context for prompt
         self.system_context = (
             "You are Animus, an AI assistant analyzing Windows Event Logs. "
-            "You have been provided with the full JSON data of Windows Event Logs and system information. "
+            "You have been provided with the full JSON data of Windows Event Logs and system information. " 
             "The JSON data contains complete information about events from System, Application, and Security logs, "
             "as well as detailed system information. "
             "Focus on identifying potential issues and suggesting concise, actionable remediation steps based *only* on the provided logs and system info. "
             "If the user asks about Animus itself or greets you, answer directly without analyzing the logs."
         )
-        
+
     def _format_query_content(self, query: str, log_data: Dict[str, Any]) -> str:
          """
          Prepare a string containing system info, log data, and user query
          """
          # Convert log data to JSON string
          log_json = json.dumps(log_data, indent=2)
-         
+
          # Check if log data exceeds size limit
          MAX_LOG_CHARS = 80000
          if len(log_json) > MAX_LOG_CHARS:
              logger.warning(f"Log JSON truncated from {len(log_json)} to {MAX_LOG_CHARS} chars")
              log_json = log_json[:MAX_LOG_CHARS] + "\n... [truncated due to size limits]"
-         
+
          # Combine all content
          full_prompt = f"{self.system_context}\n\nFull Log Data (JSON format):\n{log_json}\n\nUser Query: {query}"
          
          if self.verbose:
              logger.info(f"Total prompt size: {len(full_prompt)} characters")
-         
+
          return full_prompt
 
     def query_logs(self, query: str, log_data: Dict[str, Any], max_response_tokens: Optional[int] = None) -> Tuple[str, float]:
         """
         Process a query using the Gemini API.
-        
+
         Args:
             query: The user's natural language question.
             log_data: The log data to analyze.
@@ -99,12 +99,12 @@ class LLMManager:
         Returns:
             Tuple of (response text, generation time in seconds).
         """
-        if not self.client:
-             return "Error: Gemini client not ready.", 0.0
-             
+        if not self.model:
+             return "Error: Gemini model not ready.", 0.0
+
         # Prepare content string
         content_prompt = self._format_query_content(query, log_data)
-        
+
         if self.verbose:
              print(f"\n--- Sending Prompt to Gemini ({len(content_prompt)} chars) ---")
              print(f"Query: {query}")
@@ -113,22 +113,21 @@ class LLMManager:
         start_time = time.time()
         try:
             # Configure generation parameters
-            generation_config = {
-                "temperature": 0.2,
-                "top_p": 0.8,
-                "top_k": 40,
-                "max_output_tokens": max_response_tokens or 2048
-            }
-            
-            # Generate content
-            response = self.client.generate_content(
-                model=self.model_name,
-                contents=content_prompt,
-                generation_config=generation_config
+            generation_config = genai.GenerationConfig(
+                temperature=0.2,
+                top_p=0.8,
+                top_k=40,
+                max_output_tokens=max_response_tokens or 2048
             )
             
+            # Generate content
+            response = self.model.generate_content(
+                content_prompt,
+                generation_config=generation_config
+            )
+
             generation_time = time.time() - start_time
-            
+
             # Access response text safely
             try:
                  result_text = response.text
@@ -141,7 +140,7 @@ class LLMManager:
 
             if self.verbose:
                 logger.info(f"Gemini response received in {generation_time:.2f} seconds")
-                
+
             return result_text, generation_time
 
         except Exception as e:

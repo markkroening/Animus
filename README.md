@@ -1,32 +1,30 @@
 # Animus CLI
 
 ## Overview
-Animus CLI is a local Windows Event Log analysis tool that uses natural language processing to help technicians quickly analyze and understand system events. This tool runs entirely on the local Windows machine with no cloud dependencies.
+Animus CLI is a local Windows Event Log analysis tool that uses natural language processing to help technicians quickly analyze and understand system events. This tool runs on a local Windows machine and uses Google's Gemini API for intelligent analysis.
 
-## Built with Llama
-This application uses Llama 3.2, a large language model developed by Meta. For more information about Llama, visit [Meta AI's Llama page](https://ai.meta.com/llama/).
+## Powered by Google Gemini
+This application uses Google's Gemini API, a state-of-the-art language model for AI-assisted analysis. For more information about Gemini, visit [Google's Gemini page](https://ai.google.dev/).
 
 ## Features
 
 - **Log Collection**: Automatically gathers Windows Event Logs (System, Application, Security) and system metadata.
 - **System Information**: Collects detailed information about the OS, hardware, and system configuration.
-- **Local Analysis**: Processes logs locally with no data leaving the machine.
-- **AI-Powered Insights**: Uses a local Llama 3.2 3B model to analyze logs and answer questions.
+- **AI-Powered Insights**: Uses Google Gemini to analyze logs and answer questions.
 - **Natural Language Interface**: Ask questions about your system in plain English.
 - **Interactive CLI**: User-friendly command-line interface with command history and colorful output.
 - **Automatic Log Collection**: Automatically collects fresh logs on startup if existing logs are outdated.
 - **Structured Data**: Parses logs into structured data objects for easy querying and analysis.
 - **Smart Queries**: Built-in support for querying logs by event ID, error type, or keywords.
 - **Conversational Q&A Mode**: Dedicated interactive mode for asking multiple questions about your logs.
-- **Offline Operation**: Performs all analysis locally without internet connectivity.
 
 ## Requirements
 
 - Windows 10 or 11
 - PowerShell 5.1 or higher
 - Python 3.9+
-- 6GB+ RAM (8GB recommended for optimal LLM performance)
-- 2GB of free disk space for the model file
+- Internet connection for Gemini API access
+- Google Gemini API key
 
 ## Installation
 
@@ -41,11 +39,13 @@ This application uses Llama 3.2, a large language model developed by Meta. For m
    pip install -r requirements.txt
    ```
 
-3. Download the Llama model file:
-   - Download the [llama-3.2-3b-instruct.Q4_0.gguf](https://huggingface.co/TheBloke/Llama-3.2-3B-Instruct-GGUF/resolve/main/llama-3.2-3b-instruct.Q4_0.gguf) model (about 2GB)
-   - Place it in the `models` directory
-
-   > **Note**: The AI features are optional. If the model file is not found, Animus will fall back to basic analysis capabilities.
+3. Set up your Google Gemini API key:
+   - Get your API key from [Google AI Studio](https://ai.google.dev/)
+   - Create a `.env` file in the project root with your API key:
+   ```
+   GEMINI_API_KEY=your_api_key_here
+   ```
+   - Alternatively, you can set it as an environment variable
 
 4. Run the tool:
    ```
@@ -59,16 +59,7 @@ This application uses Llama 3.2, a large language model developed by Meta. For m
 
 ## AI-Powered Analysis
 
-Animus CLI uses the Llama 3.2 3B language model to provide intelligent analysis of your Windows Event Logs. The model runs entirely on your local machine with no data sent to the cloud.
-
-### Model Setup
-
-The application will automatically look for the Llama model file in the following locations:
-- `./models/llama-3.2-3b-instruct.Q4_0.gguf` (recommended)
-- `./llama-3.2-3b-instruct.Q4_0.gguf`
-- Other standard locations (see `models/README.md` for details)
-
-You can also specify a custom model path with the `--model-path` option.
+Animus CLI uses Google's Gemini API to provide intelligent analysis of your Windows Event Logs.
 
 ### How It Works
 
@@ -76,7 +67,7 @@ When you ask a question, Animus:
 1. Loads your Windows Event Logs 
 2. Intelligently filters relevant events based on your query
 3. Creates a prompt containing system info and filtered events
-4. Passes this prompt to the local Llama model
+4. Sends this prompt to the Google Gemini API
 5. Returns the AI-generated response with insights about your logs
 
 ### Example Questions
@@ -116,12 +107,12 @@ The Animus CLI provides an interactive question-and-answer mode that allows you 
 To start the interactive Q&A mode, run the standalone script:
 
 ```
-run_standalone_qa.bat
+run_animus.bat
 ```
 
 This will:
 1. Collect Windows event logs if they don't already exist
-2. Initialize the LLM for AI-powered analysis
+2. Initialize the connection to Gemini for AI-powered analysis
 3. Start an interactive session where you can ask questions
 
 ### Example Questions
@@ -138,9 +129,10 @@ To exit Q&A mode, type `exit`, `quit`, or press Ctrl+C.
 ### Troubleshooting Interactive Mode
 
 If you experience issues with the interactive mode:
-- Make sure the Llama model file is properly downloaded and placed in the `models` directory
+- Make sure your Gemini API key is correctly set in the `.env` file or as an environment variable
 - Check that all required Python packages are installed
-- Try running the standalone script to bypass any issues with the CLI
+- Ensure you have an active internet connection
+- Try running with the `--verbose` flag for more detailed error messages
 
 ### Automatic Log Collection
 
@@ -248,25 +240,11 @@ Animus provides several ways to query your logs. In the interactive CLI or Q&A m
    animus> show recent events
    ```
 
-7. **Get statistics and counts**:
-   ```
-   animus> how many events are there?
-   ```
-   or
-   ```
-   animus> event summary
-   ```
+## Command Line Arguments
 
-### Command-line Arguments
+The Animus CLI supports the following command-line arguments:
 
 ```
-usage: animus_cli.py [-h] [--output OUTPUT] [--hours HOURS] [--max-events MAX_EVENTS]
-                     [--collect] [--no-auto-collect] [--no-security] [--interactive]
-                     [--qa] [--query QUERY] [--model-path MODEL_PATH]
-                     [--context-size CONTEXT_SIZE] [--verbose]
-
-Animus - Windows Event Log Analysis CLI
-
 options:
   -h, --help            show this help message and exit
   --output OUTPUT, -o OUTPUT
@@ -282,26 +260,10 @@ options:
   --qa, -Q              Start directly in Q&A mode
   --query QUERY, -q QUERY
                         Process a single query and exit
-  --model-path MODEL_PATH
-                        Path to Llama model file (llama-3.2-3b-instruct.Q4_0.gguf)
-  --context-size CONTEXT_SIZE
-                        Token context size for the LLM (default: 2048)
   --verbose, -v         Enable verbose output
+  --model-name MODEL_NAME
+                        Name of the Gemini model to use (default: gemini-1.5-flash-latest)
 ```
-
-## LLM Performance Considerations
-
-The Llama 3.2 3B model requires significant system resources:
-
-- **Memory Usage**: Approximately 4-6GB of RAM while running
-- **Disk Space**: ~2GB for the model file
-- **Processing Time**: Responses may take 5-30 seconds depending on your CPU
-
-For better performance:
-- Use a system with 8GB+ RAM
-- Run on a machine with a modern multi-core CPU
-- Consider reducing the context size with `--context-size 1024` on lower-end systems
-- If needed, you can use smaller model variants (see `models/README.md`)
 
 ## Development
 
@@ -310,23 +272,3 @@ This project is in active development. The current milestone focuses on the AI-p
 ## License
 
 [MIT License](LICENSE)
-
-## Quick Start Guide
-
-### Windows:
-1. Make sure you have [Python 3.9+](https://www.python.org/downloads/) installed
-2. Download and install [Ollama](https://ollama.ai/download) for Windows
-3. Run the `run_animus_with_ollama.bat` script
-   - This will use Ollama to download the Llama 3.2 3B model
-   - The script will find and copy the model file to the correct location
-   - If you encounter issues, see the [installation guide](INSTALL_WITH_OLLAMA.md)
-
-### Linux/Mac:
-1. Make sure you have Python 3.9+ installed
-2. Make the script executable and run it:
-   ```bash
-   chmod +x run_animus_with_ollama.sh
-   ./run_animus_with_ollama.sh
-   ```
-   - The script will install Ollama if needed and download the model automatically
-   - If you encounter issues, see the [installation guide](INSTALL_WITH_OLLAMA.md)
