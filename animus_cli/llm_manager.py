@@ -12,7 +12,9 @@ import json
 import logging
 from typing import Dict, Any, Optional, Tuple
 from dotenv import load_dotenv
-from google import genai
+import google.generativeai as genai
+
+from .log_processor import LogProcessor, process_log_file
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -43,44 +45,63 @@ class LLMManager:
         self.model_name = model_name
         self.api_key = api_key or GEMINI_API_KEY
         self.verbose = verbose
-        self.client = None
+        self.model = None
+        self.log_processor = LogProcessor(verbose=verbose)
         
         if not self.api_key:
              raise GeminiAPIError("Gemini API Key not found. Please set GEMINI_API_KEY in your .env file or provide it during initialization.")
              
         # Create the client instance
         try:
-            self.client = genai.Client(api_key=self.api_key)
+            # Configure the API
+            genai.configure(api_key=self.api_key)
+            
+            # Create a generative model instance
+            self.model = genai.GenerativeModel(model_name=self.model_name)
+            
             if self.verbose:
                  logger.info(f"Using model: {self.model_name}")
         except Exception as e:
-             raise GeminiAPIError(f"Failed to create Gemini client: {e}") from e
+             raise GeminiAPIError(f"Failed to create Gemini model: {e}") from e
              
         # System context for prompts
         self.system_context = (
             "You are Animus, an AI assistant analyzing Windows Event Logs. "
-            "You have been provided with the full JSON data of Windows Event Logs and system information. "
-            "The JSON data contains complete information about events from System, Application, and Security logs, "
-            "as well as detailed system information. "
+            "You have been provided with processed Windows Event Log data and system information. "
+            "The data contains summarized information about events from System, Application, and Security logs, "
+            "as well as system information and statistics. "
             "Focus on identifying potential issues and suggesting concise, actionable remediation steps based *only* on the provided logs and system info. "
             "If the user asks about Animus itself or greets you, answer directly without analyzing the logs."
         )
         
     def _format_query_content(self, query: str, log_data: Dict[str, Any]) -> str:
          """
-         Prepare a string containing system info, log data, and user query
+         Prepare a string containing processed log data and user query
          """
-         # Convert log data to JSON string
-         log_json = json.dumps(log_data, indent=2)
-         
-         # Check if log data exceeds size limit
-         MAX_LOG_CHARS = 80000
-         if len(log_json) > MAX_LOG_CHARS:
-             logger.warning(f"Log JSON truncated from {len(log_json)} to {MAX_LOG_CHARS} chars")
-             log_json = log_json[:MAX_LOG_CHARS] + "\n... [truncated due to size limits]"
+         # Process the raw log data to make it more LLM-friendly
+         try:
+             # Process the logs through our new processor
+             processed_data = self.log_processor.process_logs(log_data)
+             
+             # Get the formatted text representation
+             formatted_logs = self.log_processor.format_for_llm(processed_data)
+             
+             if self.verbose:
+                 logger.info(f"Processed log data: {len(formatted_logs)} characters")
+                 
+             # Check if processed logs exceeds size limit
+             MAX_LOGS_CHARS = 100000  # Increased limit since processed data should be smaller
+             if len(formatted_logs) > MAX_LOGS_CHARS:
+                 logger.warning(f"Processed logs truncated from {len(formatted_logs)} to {MAX_LOGS_CHARS} chars")
+                 formatted_logs = formatted_logs[:MAX_LOGS_CHARS] + "\n... [truncated due to size limits]"
+                 
+         except Exception as e:
+             logger.error(f"Error processing logs: {e}")
+             # Fallback to using JSON if processing fails
+             formatted_logs = json.dumps(log_data, indent=2)[:50000] + "\n... [truncated due to size limits]"
          
          # Combine all content
-         full_prompt = f"{self.system_context}\n\nFull Log Data (JSON format):\n{log_json}\n\nUser Query: {query}"
+         full_prompt = f"{self.system_context}\n\nLog Data:\n{formatted_logs}\n\nUser Query: {query}"
          
          if self.verbose:
              logger.info(f"Total prompt size: {len(full_prompt)} characters")
@@ -99,8 +120,8 @@ class LLMManager:
         Returns:
             Tuple of (response text, generation time in seconds).
         """
-        if not self.client:
-             return "Error: Gemini client not ready.", 0.0
+        if not self.model:
+             return "Error: Gemini model not ready.", 0.0
              
         # Prepare content string
         content_prompt = self._format_query_content(query, log_data)
@@ -113,17 +134,16 @@ class LLMManager:
         start_time = time.time()
         try:
             # Configure generation parameters
-            generation_config = {
-                "temperature": 0.2,
-                "top_p": 0.8,
-                "top_k": 40,
-                "max_output_tokens": max_response_tokens or 2048
-            }
+            generation_config = genai.GenerationConfig(
+                temperature=0.2,
+                top_p=0.8,
+                top_k=40,
+                max_output_tokens=max_response_tokens or 2048
+            )
             
-            # Generate content
-            response = self.client.generate_content(
-                model=self.model_name,
-                contents=content_prompt,
+            # Generate content using the model instance
+            response = self.model.generate_content(
+                content_prompt,
                 generation_config=generation_config
             )
             

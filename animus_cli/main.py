@@ -467,7 +467,8 @@ class LogParser:
             return None
 
 # Import LLM Manager
-from llm_manager import LLMManager, GeminiAPIError
+from .llm_manager import LLMManager, GeminiAPIError
+from .log_processor import process_log_file
 
 class AnimusCLI:
     """Main CLI application class for Animus"""

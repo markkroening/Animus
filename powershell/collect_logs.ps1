@@ -53,7 +53,7 @@ $OSInfo = Get-CimInstance Win32_OperatingSystem | Select-Object Caption, Version
                                                    }}
 
 # Computer System Information
-$ComputerInfo = Get-CimInstance Win32_ComputerSystem | Select-Object Manufacturer, Model, 
+$ComputerInfo = Get-CimInstance Win32_ComputerSystem | Select-Object Name, Manufacturer, Model, 
                                                         SystemType, NumberOfProcessors, 
                                                         @{Name="TotalPhysicalMemory"; Expression={[math]::Round($_.TotalPhysicalMemory / 1GB, 2).ToString() + " GB"}}
 
