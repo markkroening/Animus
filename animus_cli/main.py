@@ -488,14 +488,37 @@ class LogParser:
     def parse_file(file_path: str) -> Optional[LogCollection]:
         """Parse logs from a JSON file"""
         try:
-            # Try direct loading with utf-8 - most common case first
+            # Try to read the file with different encodings
+            raw_data = None
+            encodings = ['utf-8-sig', 'utf-8', 'latin-1']
+            
+            for encoding in encodings:
+                try:
+                    with open(file_path, 'r', encoding=encoding) as f:
+                        raw_data = f.read()
+                    break  # If successful, break the loop
+                except UnicodeDecodeError:
+                    continue  # Try next encoding
+            
+            if raw_data is None:
+                print(f"Error: Could not read file with any supported encoding: {file_path}")
+                return None
+                
+            # Check if the file is empty
+            if not raw_data or len(raw_data.strip()) == 0:
+                print(f"Error: File is empty: {file_path}")
+                return None
+                
+            # Parse the JSON
             try:
-                with open(file_path, 'r', encoding='utf-8') as f:
-                    return LogParser.parse_json(json.load(f))
-            except (json.JSONDecodeError, UnicodeDecodeError):
-                # If failed, try with utf-8-sig for BOM handling
-                with open(file_path, 'r', encoding='utf-8-sig') as f:
-                    return LogParser.parse_json(json.load(f))
+                data = json.loads(raw_data)
+            except json.JSONDecodeError as e:
+                print(f"Error: Invalid JSON format in {file_path}: {e}")
+                return None
+                
+            # Parse the JSON data into a LogCollection
+            return LogParser.parse_json(data)
+            
         except FileNotFoundError:
             print(f"Error: File not found: {file_path}")
             return None
@@ -533,7 +556,6 @@ class AnimusCLI:
 
         # Determine output path
         self.output_path = output_path or DEFAULT_OUTPUT_PATH
-        self.print_status(f"Using log file: {self.output_path}", "info")
         if self.qa_mode:
              self.print_status(f"Using model: {self.model_name}", "info")
 
@@ -593,14 +615,6 @@ class AnimusCLI:
         # Display model attribution
         print(f"{Fore.MAGENTA}Powered by Google Gemini{Style.RESET_ALL} - AI-powered log analysis")
         
-        # Show basic usage instructions
-        print(f"\n{Fore.CYAN}Usage:{Style.RESET_ALL}")
-        print("- Type your question about the Windows Event Logs")
-        print("- Type 'exit' or press Ctrl+C to quit")
-        print("- Type 'help' for more information")
-        print(f"\n{Fore.YELLOW}Tip:{Style.RESET_ALL} Ask about errors, warnings, or system issues in natural language.")
-        print("=" * 60)
-        
     def print_help(self):
         """Print available commands and help information"""
         print(f"\n{Fore.CYAN}Available Commands:{Style.RESET_ALL}")
@@ -642,37 +656,12 @@ class AnimusCLI:
         try:
             self.print_status(f"Loading logs from {self.output_path}...")
             
-            # First, check if the file is valid JSON
-            try:
-                # Try with utf-8-sig first to handle BOM
-                try:
-                    with open(self.output_path, 'r', encoding='utf-8-sig') as f:
-                        raw_data = f.read()
-                except UnicodeDecodeError:
-                    # Fall back to regular utf-8
-                    with open(self.output_path, 'r', encoding='utf-8') as f:
-                        raw_data = f.read()
-                    
-                # Check for common encoding issues or malformed JSON
-                if not raw_data or len(raw_data.strip()) == 0:
-                    self.print_status("Log file exists but is empty", "error")
-                    self.log_collection = None
-                    return False
-                    
-                # Try to parse the JSON
-                try:
-                    self.log_collection = LogParser.parse_file(self.output_path)
-                except Exception as e:
-                    self.print_status(f"Error parsing log file: {e}", "error")
-                    self.log_collection = None
-                    return False
-            except Exception as e:
-                self.print_status(f"Error reading log file: {str(e)}", "error")
-                self.log_collection = None
-                return False
+            # Try to parse the log file
+            self.log_collection = LogParser.parse_file(self.output_path)
             
-            # Store the parsed data
-            self.log_collection = self.log_collection
+            if self.log_collection is None:
+                self.print_status("Failed to parse log file", "error")
+                return False
             
             # Print a summary
             event_counts = self.log_collection.event_count
@@ -684,9 +673,6 @@ class AnimusCLI:
             
             return True
             
-        except json.JSONDecodeError as e:
-            # This should rarely happen now that we're handling JSON errors above
-            self.print_status(f"Invalid JSON format in {self.output_path}: {str(e)}", "error")
         except FileNotFoundError:
             self.print_status(f"Log file not found: {self.output_path}", "error")
         except Exception as e:
@@ -1323,12 +1309,6 @@ def main():
     if IS_WINDOWS:
         init(autoreset=True) # Initialize colorama on Windows
 
-    # Debug output to understand execution context
-    print(f"{Fore.CYAN}Debug: Running as bundled exe: {IS_BUNDLED}")
-    print(f"{Fore.CYAN}Debug: App base directory: {APP_BASE_DIR}")
-    print(f"{Fore.CYAN}Debug: Default output path: {DEFAULT_OUTPUT_PATH}")
-    print(f"{Fore.CYAN}Debug: Current working directory: {os.getcwd()}{Style.RESET_ALL}")
-
     args = parse_arguments()
 
     # Map log collection flags
@@ -1338,10 +1318,9 @@ def main():
 
     # Set verbosity based on args
     verbose = args.verbose
-
-    # Determine log file path and ensure it's a proper Path object
-    log_file_path = Path(args.output if args.output else DEFAULT_OUTPUT_PATH).resolve()
-    print(f"{Fore.CYAN}Debug: Final log file path: {log_file_path}{Style.RESET_ALL}")
+    
+    # Get log file path from args
+    log_file_path = Path(args.output)
     
     # Ensure the directory for the log file exists
     log_file_path.parent.mkdir(parents=True, exist_ok=True)
