@@ -1,605 +1,126 @@
 ---
 description: 
 globs: 
-alwaysApply: true
+alwaysApply: false
 ---
-
-# Your rule content
-
-- You can @ files here
-- You can use markdown but dont have to
-
-Animus CLI MVP Architecture
-
-Overview
-This document outlines a lightweight Animus CLI (Command-Line Interface) MVP architecture for local Windows Event Log analysis. It is a proof-of-concept that runs entirely on the same Windows workstation being analyzed (no cloud or remote services). The MVP is a Python-based CLI application that uses a PowerShell script for log collection and an open-source Large Language Model (LLM) running locally to interpret the logs. The goal is to allow a technician to ask natural-language questions about the system's events and get AI-driven insights, all offline. This will prove the value of local AI-driven log analysis before expanding to a hosted/cloud solution.
-Key features of this local MVP:
-Runs fully on the target Windows machine (no network/cloud dependency).
-
-
-Provides a CLI for technicians to interact with the system via text prompts.
-
-
-Uses a PowerShell log collector to gather Windows Event Logs (System, Application, Security) and system metadata, exporting them to JSON (Design Document Animus - LLM-Powere.txt).
-
-
-Integrates a locally-hosted open-source LLM (recommended model discussed below) to analyze the JSON log data and answer questions.
-
-
-Accepts technician questions in natural language and returns answers based on the log data and context.
-
-
-Excludes any remote command execution features in this version (those can be considered in future iterations).
-
-
-Components and Responsibilities
-To achieve the above, the system is broken down into a few key components:
-1. PowerShell Log Collector
-Function: Gathers Windows Event Log entries and basic system information from the local machine.
-
-
-Log Sources: Collects events from the System, Application, and Security event logs (Design Document Animus - LLM-Powere.txt), which are the primary logs for system and application events.
-
-
-Data Filtering: Can apply filters (e.g. collect events from the last 24-48 hours or a maximum number of recent events) to limit the volume of data (Design Document Animus - LLM-Powere.txt). This keeps the analysis focused and the dataset manageable for the LLM.
-
-
-Output Format: Parses and converts the raw .evtx entries into a structured JSON format (Design Document Animus - LLM-Powere.txt). Each log entry might include fields like timestamp, event ID, source, level (Information/Warning/Error), and message.
-
-
-Additional Metadata: Collects system metadata to provide context. This can include OS version/build, computer model/manufacturer, system installation age, hardware stats (CPU/RAM/disk), uptime, etc. (Design Document Animus - LLM-Powere.txt). Such info helps the LLM understand the environment (for example, knowing the OS build or hardware can contextualize certain errors).
-
-
-Storage: Writes the JSON output to a local file (e.g. animus_logs.json) on the workstation. This file serves as the input data for the analysis.
-
-
-Implementation: A standalone PowerShell script (or module) will use cmdlets like Get-WinEvent to retrieve events and ConvertTo-Json to format them. It can be invoked manually or by the Python CLI. (In this MVP, the script could be run as part of the CLI startup or as a prerequisite step.)
-
-
-Security/Privacy: Since all data stays local, minimal scrubbing is needed. However, if desired, the script can omit or anonymize sensitive identifiers (usernames, IPs) similar to the full design (Design Document Animus - LLM-Powere.txt), though for an MVP that may not be crucial.
-
-
-2. Local Log Storage (JSON Data)
-Role: Acts as the bridge between data collection and analysis. The JSON file produced by the PowerShell script contains all the events and metadata for the LLM to consume.
-
-
-Structure: Likely a JSON array of event objects and an object for system info. For example:
-
- {
-  "system_info": { "OS": "Windows 10 Pro, Build 19045", "RAM": "16GB", ... },
-  "events": [
-     { "LogName": "System", "TimeCreated": "2025-04-17T08:00:00Z", "EventID": 41, "Level": "Critical", "Source": "Kernel-Power", "Message": "The system rebooted without cleanly shutting down ..."},
-     { "LogName": "Application", "TimeCreated": "...", "EventID": 1000, "Level": "Error", "Source": "Application Error", "Message": "Faulting application name: ..."}, 
-     ... 
-  ]
-}
-
-
-Location: Stored on the local disk (e.g., in the same directory as the CLI tool). The Python application will load this file for analysis. Keeping it local ensures the data never leaves the machine.
-
-
-Lifecycle: This file can be regenerated each time the tool runs to get fresh log data. Previous files could be archived if needed for history, but the MVP can simply overwrite or update it on each run.
-
-
-Size Management: To prevent the file from growing too large (which could overwhelm the LLM input), the log collector should limit the number of events (by recency or count). For example, collecting the last 48 hours of events or the last few hundred events from each log (Design Document Animus - LLM-Powere.txt). This provides recent pertinent data without excessive noise.
-
-
-3. Python CLI Application (Orchestrator)
-Function: Serves as the main application that the technician interacts with via the command line. It orchestrates log collection, LLM query preparation, and response output.
-
-
-Responsibilities:
-
-
-Initiate Log Collection: On startup, the CLI can call the PowerShell script (e.g., via Python's subprocess module) to generate the latest logs JSON. This can be automatic or triggered by a command. If the log file already exists or was recently updated, the tool might reuse it to save time.
-
-
-Load Data: Reads the JSON file into Python structures (e.g., using the json library). It may load all events and metadata into memory for quick access.
-
-
-Prompt for Questions: Presents an interactive prompt to the user in the terminal (e.g., a > where the technician types questions). The CLI could print a welcome message and usage instructions, then wait for input.
-
-
-Prepare LLM Input: Upon receiving a question, the app composes a prompt for the LLM. This might include:
-
-
-A brief system context (e.g., "You are Animus, the spirit of this Windows machine. You have access to its event logs and system info. The technician will ask you questions about system events.").
-
-
-The relevant log data or summary. For instance, the tool might attach a subset of the JSON data or a synthesized summary of recent errors if the question relates to errors. (Including the entire log JSON in the prompt may not be feasible if it's large, but the tool can inject key parts or recent events as context).
-
-
-The user's question at the end, e.g., "Technician's question: Why did the machine reboot last night?".
-
-
-This prompt design can draw on the original concept of simulating a conversation with the computer entity aware of its logs (Design Document Animus - LLM-Powere.txt).
-
-
-Query LLM: Sends the prepared prompt to the local LLM for processing. This could be done via a direct function call if the model is loaded in-memory (for example, using a Transformers pipeline or similar interface).
-
-
-Output Answer: Receives the LLM-generated answer and prints it to the console in a readable format. It might prefix the answer with a label (e.g., "Animus:") to distinguish it from user input.
-
-
-Loop: Continues to accept further questions until the user exits. The context for follow-up questions can either be stateless (each question considered independently with the full logs context) or stateful (remembering previous Q&A). For MVP, treating each query independently with the same logs data is simpler.
-
-
-No Remote Commands: While the full vision for Animus includes executing system actions, this CLI MVP will not implement command execution. All outputs are informational only. If a user asks for an action (e.g., "clear the logs" or "restart a service"), the tool would likely respond with an explanation or refusal since that functionality is out of scope in the MVP.
-
-
-Implementation: Python 3 script that can be run in a console. It will use standard libraries (json, maybe argparse for CLI arguments, subprocess for running PowerShell, etc.) and whichever library is needed for the LLM. The code structure might have functions like collect_logs(), load_logs(), format_prompt(question, data), query_llm(prompt), etc., to keep it organized.
-
-
-User Experience: Text-based and simple. The user sees status messages (e.g., "Collecting logs..."), then a prompt for questions. Responses appear as plain text answers. This simplicity is by design for a quick implementation and testing.
-
-
-4. Locally Hosted LLM Engine
-Function: The "brain" of Animus – a local Large Language Model that interprets the logs and answers questions. This component is an open-source AI model running on the workstation, without internet connectivity.
-
-
-Model Choice: For this MVP, we need a open-source LLM that can run on modest hardware yet provide coherent natural language answers:
-
-
-Recommendation: Llama 2 Chat (Meta AI) in the 7B or 13B parameter variant is a strong candidate. It is available for local use and has been fine-tuned for conversational applications. Despite not reaching GPT-4 levels, Llama 2 is among the best open models and outperforms many other open-source LLMs on various tasks (Best Open Source LLMs of 2024 — Klu). A 7B model is lighter on resources, while 13B offers better accuracy if the hardware can support it.
-
-
-Other alternatives could be Vicuna 13B, Falcon 7B/40B (instruct variant), or GPT-NeoX 20B, but Llama 2 Chat has broad support and good overall performance, making it a favorable choice for a general Q&A on logs. It’s also permissively licensed for use.
-
-
-Hosting the Model: The model will be loaded locally. There are a couple of ways to do this:
-
-
-Using Hugging Face Transformers: The Python CLI can use the Transformers library to load the pre-trained model and tokenizer (e.g., AutoModelForCausalLM and AutoTokenizer). This typically requires the model files to be present on disk or downloaded. Once loaded, the code can generate text by feeding the prompt to the model. This method leverages either the CPU or GPU via PyTorch/Accelerate.
-
-
-Using LLM runtime like llama.cpp: For lower resource usage, a quantized version of the model (e.g., 4-bit quantization) can be loaded via llama-cpp-python or similar. This is purely CPU-based and can run on systems without a strong GPU, at the cost of slower response. It’s suitable for an MVP if performance is acceptable.
-
-
-GPT4All or Similar Wrappers: Tools like GPT4All provide Python bindings to a variety of local models with a simple interface. This could reduce integration code, though it might be less flexible. The developer can choose this if ease-of-use is a priority.
-
-
-Interpreting Logs: The LLM itself isn't pre-trained specifically on event logs, but given a well-structured prompt, it can analyze the text of the logs. For example, the JSON or a summarized form of it will be part of the prompt. The LLM will use its general knowledge and language understanding to correlate the question with the log information provided. (E.g., if the logs show a "Kernel-Power 41" error and the question is about an unexpected reboot, the model can recognize this event as a likely cause of the reboot and explain it.)
-
-
-Memory and Performance: Running a model like Llama 2 13B locally might require around 10-15 GB of RAM (or a GPU with at least 12GB VRAM). If the target environment is a typical technician laptop or a server, this might be feasible. Otherwise, the 7B model or a quantized model would be used to fit in smaller memory (a 4-bit quantized 7B model can run in ~4GB RAM). The architecture should note these requirements, and the developer should test the model choice on their hardware. The MVP should still function on CPU-only systems, albeit with slower answer generation.
-
-
-Invocation: The CLI will send the prompt string to the model and get back a generated answer string. This could take a few seconds to a minute depending on model size and hardware. The interaction is entirely local – there is no API call to an external service. This ensures even sensitive log data remains on the machine for privacy (a key reason to choose a local LLM approach).
-
-
-Data Flow Sequence
-The following sequence describes how data moves through the system, from log collection to answering a question:
-Log Collection (PowerShell stage): When the technician launches the CLI tool, it first invokes the PowerShell Log Collector script. The script gathers the latest Windows Event Log entries from the System, Application, and Security logs (Design Document Animus - LLM-Powere.txt), along with system metadata, and outputs these to a JSON file on the local disk. (If the script was already run recently, this step could be skipped or the existing JSON used.)
-
-
-Loading Data: The Python CLI reads the JSON file (e.g., animus_logs.json). It parses the content into memory. The CLI now has a structured representation of all relevant events and system info. It might also do some preprocessing here, such as sorting events by time, or tagging important events (Critical/Error levels).
-
-
-User Question Prompt: The CLI prompts the technician for a question (for example: "Ask about the system events, e.g., 'Why did the system reboot?': "). The technician enters a natural language question. This question, along with the log data, is what the system will use to formulate an answer.
-
-
-Preparing LLM Prompt: The CLI constructs a prompt for the language model. This is a critical step where the log data and question are combined. For instance:
-
-
-It may start with a brief instruction to the model, establishing its role and context (e.g., "You are Animus, the spirit of this Windows PC. You have access to the following event log data and system info, and you will answer questions about them for the technician.").
-
-
-Then it can include either the raw event data (in JSON or a simplified text form). If the JSON is too large to include in full, the CLI might include only a subset, such as the most recent errors or events that likely relate to the question. For example, if the question mentions "reboot" and the logs contain a Kernel-Power event, the CLI could include that event's details in the prompt. The original design anticipated chunking or limiting logs for the LLM (Design Document Animus - LLM-Powere.txt), and a similar approach would be used locally to respect the model's input size limits.
-
-
-Finally, it appends the user's question. e.g., "Question: The technician asks, 'Why did the system reboot last night?'. Answer as an explanation based on the above logs."
-
-
-The prompt may be formatted as a single large text or using a conversation format (if the model is chat-tuned, it might expect a user/system message format).
-
-
-LLM Processing (Inference stage): The local LLM receives this prompt string and begins generating a response. Internally, the model will analyze the textual log data provided in the prompt and the question. For instance, it might "notice" an event entry about a shutdown or crash around the time in question. It uses its trained knowledge to interpret the meaning of that event (e.g., Kernel-Power event ID 41 is a power-related crash) and formulates an answer in human-readable terms. This step is where the heavy AI computation happens, but it's on the local CPU/GPU.
-
-
-Answer Output: Once the LLM has generated the answer, the Python CLI captures that output and displays it to the technician. The answer might be something like: "It appears the system experienced a critical Kernel-Power event (ID 41) last night, which indicates the machine rebooted unexpectedly (likely due to a power loss or crash). No specific application errors were logged before this, suggesting it was a sudden power issue." The CLI can format this with a prefix like "Animus:" to clarify it's the AI speaking.
-
-
-Iterative Q&A: The technician can continue to ask follow-up questions. The CLI may either prepend the new question to the existing context or start fresh each time with the same logs data (design choice for MVP simplicity). In either case, steps 4-6 repeat for each query. The logs data remains available for each question without needing to re-run the collection every time (unless the user suspects new events have appeared and manually triggers an update).
-
-
-Termination: The session ends when the user exits the CLI (e.g., by typing a command like exit or pressing Ctrl+C). The application can then free the model from memory if needed. The log file remains on disk (which could be reviewed or reused for a later session).
-
-
-Throughout this flow, all data stays local. The logs are read from the local system and fed to a model running on the same system. No step involves sending data over a network. This ensures privacy and also allows the tool to work on secure or offline environments where external connectivity is not permitted.
-Toolchain and Runtime Environment
-Implementing this MVP will require setting up the right environment and dependencies on the Windows workstation:
-Operating System: Windows 10 or 11 (the tool relies on Windows Event Log, and PowerShell). The PowerShell script can be written for Windows PowerShell 5.1 or the newer PowerShell 7+; both should be available or installable on modern Windows. Ensure the execution policy allows running the custom script (developers might need to sign the script or run Set-ExecutionPolicy -Bypass for testing).
-
-
-Python Environment: Install Python (3.9+ recommended, ideally 3.10 or 3.11 to support the latest libraries). The CLI tool will be a Python script (animus_cli.py for example).
-
-
-PowerShell Script: Develop the PowerShell log collector (e.g., collect_logs.ps1). This script can be bundled with the application or generated on the fly by the Python code. During runtime, the Python can call it like:
-
- subprocess.run(["powershell", "-ExecutionPolicy", "Bypass", "-File", "collect_logs.ps1"])
- to produce the JSON. Alternatively, the Python code could use the win32evtlog Python API to fetch logs, but using PowerShell leverages built-in filtering and is aligned with the original design.
-
-
-Python Dependencies:
-
-
-JSON parsing: Python's built-in json module for reading the log file.
-
-
-LLM interfacing: Depending on the chosen model and method:
-
-
-Hugging Face Transformers: Install with pip install transformers (and possibly pip install accelerate for better performance, plus torch or tensorflow depending on backend). This would allow loading the model with a few lines of code. If using transformers, ensure to also have sentencepiece or other tokenizer dependencies that some models require.
-
-
-Llama-C++ (for CPU): Install pip install llama-cpp-python which allows running a GGML format model. This avoids heavy frameworks and can be easier on memory for CPU inference.
-
-
-GPT4All: Install pip install gpt4all if opting for that route, and download a compatible model through it.
-
-
-(It's important to note that downloading an open-source model like Llama 2 may require agreeing to a license on the Hugging Face website. The developer should do this and then place the model weights on the local machine or let the code download them programmatically with an API token.)
-
-
-Prompt formatting: No special library needed, but if complex, one could use Python string templates or even a prompting library. For MVP, straightforward string concatenation is fine.
-
-
-LLM Model Files: The recommended LLM (e.g. Llama-2-13B-chat) will be a multi-gigabyte file. It should be downloaded in advance. For example, from Hugging Face one might obtain llama-2-13b-chat.ggmlv3.q4_0.bin (a quantized 4-bit example for llama.cpp) or the full model in PyTorch format. These files should reside on the local disk. The path to the model or model name would be specified in the Python code when loading the model. The runtime environment must have enough disk space for these files.
-
-
-Memory/Performance Considerations: Ensure the machine has sufficient RAM. If using a large model on a smaller machine, be prepared to either:
-
-
-Use a smaller model (e.g., the 7B version or an 8B model like Mistral which is newer and efficient).
-
-
-Use quantization to trade some accuracy for lower memory use.
-
-
-The CLI could check available memory or allow configuring the model size.
-
-
-Runtime Execution: The developer (or user) will run the Python script from a terminal. For example:
-
- C:\> python animus_cli.py
- This will trigger log collection and then present the interactive prompt. (Optionally, the path to the PowerShell script or log file could be arguments, e.g., animus_cli.py --logfile mylogs.json if they want to collect logs separately.)
-
-
-Isolation: All components run locally, but they do run as processes on the system, so appropriate permissions are needed (the user running it should have rights to read event logs, which standard admin accounts do).
-
-
-Dependencies installation: For ease of quick implementation, the developer might create a requirements.txt including needed Python packages (transformers, etc.). Also, instructions to enable any PowerShell remoting or policy if needed for the script.
-
-
-By using widely-available tools (PowerShell, Python, and open-source models), the toolchain is accessible to a single developer. They can iteratively build and test each part on a typical Windows workstation. No specialized hardware is strictly required (though a GPU will speed up the LLM responses).
-Example CLI Usage Flow
-To illustrate how the MVP would work from a user perspective, consider the following sample interaction. This assumes the tool is set up and the PowerShell script is either embedded or ready to run:
-C:\Users\Tech> python animus_cli.py
-[Animus CLI] Starting log collection...
-[Animus CLI] Collected System, Application, Security logs (last 48 hours) to "animus_logs.json".
-[Animus CLI] Loaded 250 events and system info. Ask me about this computer's status or events.
-> Technician: "Have there been any critical errors in the last day?"
-
-(The technician enters a question. The CLI has the logs which include event levels and timestamps.)
-Animus (AI): In the past 24 hours, I see one **Critical** error. It was a Kernel-Power event (Event ID 41) yesterday at 3:27 PM, indicating the system rebooted unexpectedly. No other critical-level events were logged in that timeframe.
-
-(The AI identified a critical Kernel-Power event from the System log and explained it.)
-> Technician: "What caused that unexpected reboot?"
-
-(A follow-up question; the CLI will reuse the log context. The LLM analyzes events around that time.)
-Animus (AI): The critical Kernel-Power event (ID 41) generally means the machine lost power or crashed without a clean shutdown. Looking at the logs before 3:27 PM, I don't see any specific error causing a shutdown. This suggests it might have been due to a sudden power loss or a manual hard reset rather than a software issue.
-
-(The AI provides an interpretation based on general knowledge of event ID 41 and the absence of other errors.)
-> Technician: "Do you see any disk errors?"
-
-(The technician asks another question. The CLI may filter for disk-related events in the log context for the prompt.)
-Animus (AI): Yes, there are several disk-related warnings. For example, at 8:45 AM today, a Disk event (Event ID 51) was logged, stating "**An error was detected on device \Device\Harddisk0\DR0 during a paging operation.**". This could indicate a potential issue with the primary hard disk. It's something to monitor, as multiple such events might precede disk failure.
-
-(The AI found a Disk warning in the System log and reported it in its answer.)
-> Technician: "Thanks, that's all."
-Animus (AI): You're welcome. Feel free to ask if you have more questions about the system's logs. (Type "exit" to quit.)
-
-(The technician exits the CLI by typing "exit" or closing the terminal.)
-In this example, we see the MVP usage flow: the tool starts, collects logs, then engages in a Q&A where the user asks about events and the AI responds with analysis grounded in the log data. The responses include details from the actual logs (event IDs, messages) combined with explanatory context (what those events mean). This is exactly the value proposition of Animus in a simple offline form.
-Testing and Debugging Suggestions
-Building this MVP as a single developer, it's important to test each component in isolation and then as an integrated system. Here are some strategies for testing and debugging:
-Test the PowerShell Log Collector in isolation: Run the PowerShell script on a test machine or the target machine directly. Verify that:
-
-
-The JSON output file is created successfully.
-
-
-The JSON structure is correct (use a JSON linter or open it in Python to ensure no syntax errors).
-
-
-Expected data is present (e.g., if you intentionally generate an event or know of a specific error in Event Viewer, confirm it appears in the JSON).
-
-
-The metadata fields (OS version, etc.) are correctly captured. If something is missing or formatted incorrectly, adjust the script accordingly.
-
-
-If the script is slow, consider narrowing the log query (e.g., filter by time or event level) and test performance.
-
-
-Unit test the JSON Loading and Parsing: Using Python, write a small test to open the JSON file and iterate through events. This ensures the Python side can handle the data. Check edge cases, such as no events in the time range (the JSON might have an empty array) or unusual characters in event messages (which might need encoding handling).
-
-
-LLM Integration Dry Run: Before hooking up the real log data, test the LLM integration with a simple prompt. For example, load the model and ask: "Hello, how are you?" or a basic arithmetic question. This checks that the model is properly installed and the Python code can invoke it. It’s easier to troubleshoot model loading issues (like missing model files or library issues) in isolation. Measure how long a simple query takes to get a sense of performance.
-
-
-Prompt Formatting Experimentation: Construct a small dummy log dataset (perhaps a few hard-coded events in JSON) and then craft a prompt as the code would. Feed it to the LLM and see what kind of answer comes back. This can be done in an interactive Python session. For example, provide a prompt that includes a fake error event and ask "what does this error mean?" to see if the model responds meaningfully. Tweak the prompt format (maybe the way JSON is presented, or translate JSON into a bullet list of events in text) to see what yields the best responses. Debugging the prompt is key to getting useful answers.
-
-
-End-to-End Testing: Run the entire CLI flow in a controlled scenario:
-
-
-You could simulate a known scenario, e.g., purposely cause a small error (like using EventCreate command to log a custom event, or unplug a USB device to generate an event) so you know what should appear in logs.
-
-
-Run the CLI, ask a question related to that event (e.g., "What error was recorded at 10:05 AM?").
-
-
-Check if the answer includes the event or references it correctly. If not, investigate whether the event was captured and included in the prompt.
-
-
-Logging and Verbosity: During development, equip the CLI with a verbose mode (e.g., a --debug flag) that prints out internal steps. For example, after constructing the prompt for the LLM, print the prompt (or at least parts of it) to the console or a debug log. This way, if the LLM answer seems off, you can see exactly what it was given. You might discover the prompt was truncated due to size, or formatted incorrectly, etc. Similarly, log the number of events loaded, the time taken for each step, and memory usage if possible. This information will help optimize the tool.
-
-
-Performance Monitoring: Keep an eye on the system resources when running the LLM. Tools like Windows Task Manager or Performance Monitor can show CPU, RAM, and possibly GPU usage. If the model is swapping to disk (which would slow it down massively), you likely need a smaller model or to reduce prompt size. For instance, if using the 13B model on a 8GB machine causes issues, switch to 7B or a quantized model. These adjustments can be tested by timing how long a response takes and how it fits in memory. The MVP's aim isn't to be extremely fast, but it should be usable (e.g., answers within tens of seconds).
-
-
-Error Handling: Intentionally test failure modes:
-
-
-Run the CLI without the JSON present to ensure it gracefully notices "logs not found" (and perhaps triggers a collection or shows an error).
-
-
-Point the CLI to an incorrectly formatted JSON to see if it catches JSON decode errors.
-
-
-Ask questions that are unrelated to the logs to see how the system handles it (the LLM might hallucinate if asked something it can't answer from logs; for MVP, this is acceptable, but you might want to include in the prompt a reminder to only use provided data).
-
-
-Interrupt the LLM generation (e.g., Ctrl+C) to see if the program can handle aborting cleanly.
-
-
-Iterative Refinement: Use the feedback from testing to refine:
-
-
-If answers are not accurate enough, consider adding more explicit instructions in the prompt (e.g., "If the answer is not in the logs, say you don't know").
-
-
-If the model output is too verbose or not technical enough, adjust the prompt tone (maybe instruct it to be concise or to provide event IDs in answers).
-
-
-If performance is too slow, try a smaller model and compare the output quality.
-
-
-Document any manual steps that were needed (like placing model files) so they can be automated or clearly explained for someone else trying to run the MVP.
-
-
-By following these testing practices, a single developer can ensure that each part of the system works as expected and that the integrated whole achieves the goal: answering questions about Windows event logs with a locally running AI. Debugging will be easier if you can isolate whether an issue lies in the log collection, the data handling, or the LLM's response, and the above suggestions help target each of those areas.
-Conclusion
-The proposed architecture delivers a self-contained Animus CLI MVP with the following qualities:
-Local-first design: Everything from log retrieval to AI inference happens on one machine, aligning with the need for privacy and offline capability.
-
-
-Simplicity: Using a CLI interface and straightforward components (PowerShell for collection, Python for logic, open-source LLM for analysis), a single developer can implement this quickly and understand the full stack.
-
-
-Core functionality: It fulfills the primary use-case of Animus – allowing a technician to query system events in natural language and get meaningful answers – without the complexity of web services or remote execution.
-
-
-Extendability: This MVP can later be expanded. For example, once proven useful, one could replace the local LLM with a more powerful cloud-based one, or integrate the CLI into a GUI or web interface, or re-introduce remote management commands. The modular design (separating log collection, data prep, and analysis) means each part can evolve (e.g., swapping the model or changing how logs are collected from a remote agent).
-
-
-Toolchain familiarity: It leverages common tools and languages (PowerShell, Python, open-source AI models) which are well-known in the developer and IT community, ensuring that maintenance and collaboration in the future will be easier.
-
-
-In summary, this architecture provides a clear path to building a functional Animus prototype that demonstrates local AI-driven log analysis. By following this design, the developer can quickly get a working system that showcases how an LLM can help interpret Windows event logs, validating the concept before investing in a full-scale cloud or integrated solution. (Design Document Animus - LLM-Powere.txt) (Design Document Animus - LLM-Powere.txt)
-
-Thought for 4 seconds
-Below is an addendum that folds your new requirement into the MVP design document.
- Nothing else in the architecture changes; this section simply clarifies installation‑time workflow, packaging, and how log collection is auto‑triggered as soon as the tool is launched.
-
-Addendum – On‑Demand Installation & Auto‑Triggered Log Collection
-1 ■ Distribution & Installation Model
-Aspect
-MVP Approach
-Package format
-A single self‑contained Windows installer or portable EXE built with PyInstaller (or Nuitka) that bundles:• the Python CLI logic• the quantized open‑source LLM weights (optionally downloaded on first run if size is a concern)• the PowerShell log‑collector script (collect_logs.ps1)
-How a technician obtains it
-• Download from an internal file share, RMM software library, or USB stick.• No background agent is installed; the EXE only runs while the tech is present.
-Foot‑print after run
-• All temp files (model cache, logs JSON) are written to %LOCALAPPDATA%\Animus by default.• The technician may delete this folder after the session. (Add a --cleanup switch to do this automatically.)
-
-2 ■ Startup Sequence (invocation triggers log collection)
-technician double‑clicks animus.exe
-         │
-         ▼
-[1] bootstrap.py
-     • verifies model files (downloads once if missing)
-     • spawns PowerShell with collect_logs.ps1
-         ▸ collects last‑48‑hour System/Application/Security events
-         ▸ collects system metadata
-         ▸ saves animus_logs.json in %LOCALAPPDATA%\Animus
-     • returns control to Python
-[2] CLI loop starts
-     • JSON is loaded into memory
-     • prompt “> Ask me about this machine…”
-
-There is no separate “run the collector first” step—the collector is executed automatically every time Animus starts.
- If the technician wants to reuse the same snapshot (e.g., while iterating through questions) they simply keep the session open; when they need fresh logs they exit and relaunch (or type refresh which reruns the collector in‑place).
-3 ■ Command‑Line Flags
-Flag
-Purpose
---hours 24
-override default 48‑hour log window
---model-path C:\Models\llama2-7b.gguf
-point to an already‑downloaded model file
---no-download
-fail fast if model weights missing (useful for offline sites)
-refresh (in prompt)
-reruns the log collector and reloads JSON without exiting
-exit
-quits and (optionally) cleans temp folder
-
-4 ■ PowerShell Integration Detail
-# collect_logs.ps1  (embedded as string in Python or shipped as file)
-$since = (Get-Date).AddHours(-$Env:ANIMUS_LOG_HOURS)  # default -48
-$events = @()
-foreach ($log in 'System','Application','Security') {
-    $events += Get-WinEvent -FilterHashtable @{LogName=$log; StartTime=$since} |
-               Select-Object @{n='LogName'; e={$_.LogName}},
-                             @{n='TimeCreated';e={$_.TimeCreated.ToString('o')}},
-                             Id, LevelDisplayName, ProviderName,
-                             @{n='Message';e={$_.Message -replace '\s+',' '}}
-}
-$sysInfo = Get-ComputerInfo |
-           Select-Object OsName, OsDisplayVersion, OsBuildNumber,
-                         CsModel, CsManufacturer,
-                         @{n='InstallDate';e={$_.OsInstallDate.ToString('o')}},
-                         CsTotalPhysicalMemory
-
-@{ system_info = $sysInfo ; events = $events } |
-    ConvertTo-Json -Depth 5 | Out-File "$env:LOCALAPPDATA\Animus\animus_logs.json"
-
-5 ■ User Experience Recap
-C:\> animus.exe   ← technician runs it only when needed
-[Animus] Collecting last 48 h of event logs...
-[Animus] Logs saved (314 events). Model loaded (Llama‑2‑7B Q4).
-> Why did the server reboot yesterday?
-Animus: A Kernel‑Power event ID 41 at 18:22 indicates an unexpected
-        shutdown, likely due to power loss or a hard reset.
-> refresh          ← technician sees new events appear
-[Animus] Re‑collecting logs...
-> Any disk errors now?
-Animus: Yes—Disk event ID 51 at 19:03 reports paging‑operation I/O
-        error on \Device\Harddisk0\DR0. Recommend SMART check.
-> exit
-[Animus] Session ended. Temporary data kept in %LOCALAPPDATA%\Animus
-
-6 ■ Impact on Other Sections
-Document Section
-Change
-Data flow diagram
-Replace “technician launches CLI → optional log collection” with “launch triggers log collection automatically”.
-Testing
-Add test case: “Fresh install, no existing model or logs → verify first run downloads model (if allowed), collects logs, enters Q&A loop.”
-Packaging
-Update CI step: PyInstaller build that embeds PS script and sets default log window env var (ANIMUS_LOG_HOURS=48).
-
-
-With this adjustment the MVP remains single‑file, on‑demand, and stateless: technicians download‑run‑question‑quit without leaving a resident agent. If later iterations integrate with N‑central, the same core can be wrapped in a remote‑execution task, but the local workflow stays identical.
-
-Recommending Llama 2 setup for limited resources
-Mark wants to use Llama 2 7B but with limited system requirements. To manage this, I suggest using a quantized model like Llama 2 7B Q4_0 with 4-bit quantization, suitable for CPU inference via llama.cpp's Python bindings. No dedicated GPU should still work with 8GB RAM, but smaller models like TinyLlama or Mistral 7B could be alternatives. I’ll check memory requirements for the quantized model, but for now, I recommend focusing on memory footprint management and using lower context models.
-Confirming memory usage for Llama 2 7B
-I’m thinking of browsing to double-check the typical memory usage for Llama 2 7B Q4_0, estimating around 3.9 to 4GB. While it's a pretty static spec, I’ll search to gather any up-to-date info or validate memory footprints for a citation. I may not really need to browse since my internal knowledge is fairly current, but a quick search could provide a precise figure for confidence. Once I confirm, I'll update the response with the details!
-Updating system setup for Llama 2 7B
-It looks like Llama 2 7B in 4-bit quantization requires about 4GB of RAM according to my sources. The minimal requirement for the 7B model is 8GB, as mentioned in some forums. I’ll craft a detailed answer that guides updating the architecture with llama.cpp and provides memory guidelines, including ensuring enough pagefile space and setting "--n-gpu-layers 0" for CPU-only use. I'll also mention smaller alternatives like TinyLlama and Phi-2 as choices for ultra-low specs. For convenience, I'll note downloading models either at first run or ahead of time.
-Thought for 16 seconds
-Update — System‑Friendly Model Strategy for the Animus CLI MVP
-You’ve chosen Llama 2 7B and need it to run on typical MSP endpoints (laptops/OptiPlex desktops, 8 GB RAM, little or no GPU).
- The architecture below replaces the generic “open‑source LLM” section in the previous MVP document and adds a few tweaks elsewhere.
- (No other parts of the design change.)
-
-1 · Model Variant & Foot‑print
-Item
-Choice / Rationale
-Base model
-Llama‑2‑7B‑chat
-Quantization
-4‑bit Q4_0 GGUF built with llama.cpp (or download pre‑quantised file) → ≈ 3.5 GB on disk, ≈ 4 GB RAM at runtime citeturn0search4
-Runtime
-llama‑cpp‑python (CPU‑only) with n_gpu_layers = 0 so it never touches a GPU.
-Memory head‑room
-Needs ~4 GB for the model + ~1 GB Python/prompt + Windows overhead → safe on any machine with 8 GB so long as other heavy apps are closed. Ollama’s guidance matches this citeturn0search3.
-Speed expectation
-Modern laptop CPUs: 5‑8 tokens/s (response in 10–30 s for a few sentences) citeturn0search1. Older dual‑core boxes will be slower but functional.
-
-Tip for slower PCs:
- Ship two weights: default Q4_0 (good quality) and fallback Q3_K_S (≈ 2.7 GB / 3 GB RAM). Let the CLI auto‑pick based on free memory.
-
-2 · Packaging & First‑Run Workflow
-flowchart LR
-    subgraph one [Technician workstation]
-        A[animus.exe<br>(PyInstaller)] --> B{model present?}
-        B -- no --> C[Download/Copy<br> Llama‑2‑7B‑Q4_0.GGUF<br>(~3.5 GB)]
-        B -- yes --> D
-        C --> D[Invoke PowerShell<br>collect_logs.ps1]
-        D --> E[JSON saved in<br>%LOCALAPPDATA%\Animus]
-        E --> F[Load model<br>with llama‑cpp‑python]
-        F --> G[Start Q&A loop]
-    end
-
-The installer is still a single EXE.
- If bandwidth is an issue, distribute the 3.5 GB model on a USB key or internal file‑share and have the EXE look there first (--model-path flag).
-
-3 · CLI Memory Self‑Check
-Add a quick check before loading the model:
-import psutil, shutil, sys
-
-FREE_GB = psutil.virtual_memory().available / (1024**3)
-REQ_GB  = 5             # model + buffer
-if FREE_GB < REQ_GB:
-    print(f"[Animus] Only {FREE_GB:.1f} GB free – switching to lite model.")
-    MODEL = "llama-2-7b-q3.gguf"
-else:
-    MODEL = "llama-2-7b-q4_0.gguf"
-
-This guarantees the process never OOM‑kills the workstation.
-
-4 · Prompt & Context Size Tweaks
-Setting
-Default
-Reason
-Context length
-1024 tokens
-Halves RAM vs 2 k ctx; still enough for ~700 words of logs + question.
-Log slice
-Most recent 100 Error/Critical events or last 24 h (whichever smaller)
-Keeps prompt small and relevant.
-Compression
-Convert each event to single‑line text ("{Time} {Level} {Source} {ID}: {Message}") before embedding into the prompt.
-
-
-
-These keep inference within the 4 GB model memory on 8 GB systems.
-
-5 · Performance Hints for Technicians
-Print once at startup:
-[Animus] Running on CPU‑only. Expect 15‑25 s per answer on this PC.
-To speed up:
-  • close Chrome/Teams
-  • reduce question length or use "refresh --hours 12"
-
-
-6 · Optional Ultra‑Lite Fallback
-If you meet devices with ≤ 4 GB free RAM:
-bundle TinyLlama‑1.1B‑chat‑Q4 (≈ 600 MB RAM)
-
-
-CLI flag --tiny forces this mode.
-
-
-Quality drops, but it still parses logs better than no AI.
-
-
-
-7 · Testing Checklist (added)
-8 GB laptop smoke‑test
- Verify model loads, answer arrives < 40 s, memory stays < 7 GB.
-
-
-Memory fallback test
- Open Chrome until only 3 GB free → rerun Animus → confirm it loads tiny model.
-
-
-Quantized file integrity
- SHA‑256 check on first run; re‑download if corrupt.
-
-
-
-With these adjustments the Animus CLI MVP is guaranteed to run acceptably on the majority of MSP endpoints while still delivering meaningful AI log analysis.
+# Animus CLI Architecture
+
+## Overview
+Animus CLI is a Windows-based command-line tool for local Windows Event Log analysis. It combines PowerShell-based log collection with AI-powered log interpretation using Google's Gemini API. The system is designed to run entirely on the target Windows workstation, providing technicians with natural language insights about system events.
+
+## Core Components
+
+### 1. Main CLI Application (animus_cli/main.py)
+- Entry point for the application
+- Handles command-line argument parsing
+- Manages the interactive Q&A loop
+- Coordinates between log collection and LLM analysis
+- Provides user interface and output formatting
+
+### 2. Log Collection (powershell/collect_logs.ps1)
+- PowerShell script for gathering Windows Event Logs
+- Collects System, Application, and Security events
+- Gathers system metadata and hardware information
+- Outputs structured JSON format
+- Configurable collection window (default 48 hours)
+
+### 3. Log Processing (animus_cli/log_processor.py)
+- Parses and structures the collected log data
+- Provides data access and filtering methods
+- Handles log file management
+- Implements log summarization and analysis
+
+### 4. LLM Integration (animus_cli/llm_manager.py)
+- Manages interaction with Google's Gemini API
+- Handles API key management
+- Formats prompts for log analysis
+- Processes and formats LLM responses
+
+## Data Flow
+
+1. Application Startup
+   ```
+   animus.bat
+      │
+      ▼
+   main.py
+      │
+      ▼
+   collect_logs.ps1 → animus_logs.json
+      │
+      ▼
+   log_processor.py
+      │
+      ▼
+   Interactive Q&A Loop
+   ```
+
+2. Log Collection Process
+   - PowerShell script collects events from Windows Event Logs
+   - Filters events based on time window and type
+   - Gathers system information
+   - Outputs structured JSON to %LOCALAPPDATA%\Animus
+
+3. Log Processing
+   - Loads and parses JSON log data
+   - Provides structured access to events and metadata
+   - Implements filtering and search capabilities
+   - Manages log file lifecycle
+
+4. LLM Analysis
+   - Formats log data into prompts for Gemini API
+   - Sends queries and receives responses
+   - Processes and formats answers for display
+   - Handles API errors and retries
+
+## User Interface
+
+### Command Line Interface
+- Interactive prompt for questions
+- Command history support
+- Color-coded output
+- Status messages and progress indicators
+
+### Available Commands
+- `refresh`: Recollect logs
+- `exit`: End session
+- `--hours`: Override collection window
+- `--model-path`: Specify model location
+- `--no-download`: Offline mode
+- `--tiny`: Force lite model
+
+## File Structure
+```
+animus_cli/
+├── main.py           # Main application entry point
+├── llm_manager.py    # Gemini API integration
+├── log_processor.py  # Log data handling
+└── __init__.py      # Package initialization
+
+powershell/
+└── collect_logs.ps1  # Log collection script
+
+animus.bat           # Windows launcher script
+```
+
+## Deployment
+- Single executable package built with PyInstaller
+- Includes all Python dependencies
+- Bundles PowerShell script
+- Self-contained deployment
+- No installation required
+
+## Security Considerations
+- Local-only execution
+- No persistent background processes
+- Optional cleanup of temporary files
+- No data transmission to external servers (except Gemini API)
+- API key management via environment variables
+
+## Error Handling
+- Graceful handling of missing logs
+- API error recovery
+- Memory management for large log files
+- PowerShell execution policy handling
+- File permission management
 

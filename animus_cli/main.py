@@ -80,7 +80,6 @@ try:
 except Exception:
     pass  # We'll handle permission issues when actually writing
 
-# Unused! These comments and code are for local Llama model files, not needed for Google Gemini API
 # Handle command history support via standard readline
 try:
     import readline

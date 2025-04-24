@@ -35,7 +35,6 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 Source: "animus_cli\*"; DestDir: "{app}\animus_cli"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "powershell\*"; DestDir: "{app}\powershell"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "animus.bat"; DestDir: "{app}"; Flags: ignoreversion
-Source: "run_animus.bat"; DestDir: "{app}"; Flags: ignoreversion
 Source: "requirements.txt"; DestDir: "{app}"; Flags: ignoreversion
 
 ; Create logs directory
@@ -69,7 +68,7 @@ end;
 
 [Run]
 ; Create command-line wrapper in the installation directory
-Filename: "cmd"; Parameters: "/c echo @echo off > ""{app}\animus.cmd"" && echo ""{app}\run_animus.bat"" %%* >> ""{app}\animus.cmd"""; Flags: runhidden
+Filename: "cmd"; Parameters: "/c echo @echo off > ""{app}\animus.cmd"" && echo ""{app}\animus.bat"" %%* >> ""{app}\animus.cmd"""; Flags: runhidden
 
 ; Install Python dependencies
 Filename: "powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -Command ""& {{pip install -r '{app}\requirements.txt'}}"""; Flags: runhidden; StatusMsg: "Installing Python dependencies..."
