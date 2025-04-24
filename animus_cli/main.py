@@ -215,6 +215,8 @@ class SystemInfo:
     logical_processors: int
     clock_speed: str
     
+    computer_name: str
+    
     disks: List[Dict[str, str]]
     
     @classmethod
@@ -254,6 +256,7 @@ class SystemInfo:
                 system_type=safe_str(computer_info.get('SystemType')),
                 processors=safe_int(computer_info.get('NumberOfProcessors')),
                 memory=safe_str(computer_info.get('TotalPhysicalMemory')),
+                computer_name=safe_str(computer_info.get('Name')),
                 
                 # Processor info
                 processor_name=safe_str(processor_info.get('Name')),
@@ -273,6 +276,7 @@ class SystemInfo:
                 manufacturer="Unknown", model="Unknown", system_type="Unknown",
                 processors=0, memory="Unknown",
                 processor_name="Unknown", cores=0, logical_processors=0, clock_speed="Unknown",
+                computer_name="Unknown",
                 disks=[]
             )
 
@@ -694,12 +698,11 @@ class AnimusCLI:
             
             # System Information
             system = summary['system']
-            print(f"System Information:")
-            print(f"  - OS: {system['os']}")
-            print(f"  - Model: {system['model']}")
-            print(f"  - Processor: {system['processor']}")
-            print(f"  - Memory: {system['memory']}")
-            print(f"  - Uptime: {system['uptime']}")
+            print(f"\n{Fore.CYAN}System Summary:{Style.RESET_ALL}")
+            print(f"OS: {system['os']}")
+            print(f"Computer Name: {system['computer_name']}")
+            print(f"Model: {system['model']}")
+            print(f"Uptime: {system['uptime']}")
             
             # Recent errors if any
             recent_errors = summary['recent_errors']
@@ -728,6 +731,7 @@ class AnimusCLI:
             system = self.log_collection.system_info
             print(f"\n{Fore.CYAN}System Summary:{Style.RESET_ALL}")
             print(f"OS: {system.os_name} {system.os_version}")
+            print(f"Computer Name: {system.computer_name}")
             print(f"Model: {system.manufacturer} {system.model}")
             print(f"Uptime: {system.uptime}")
 

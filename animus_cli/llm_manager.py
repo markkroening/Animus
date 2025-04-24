@@ -95,13 +95,27 @@ class LLMManager:
                  logger.warning(f"Processed logs truncated from {len(formatted_logs)} to {MAX_LOGS_CHARS} chars")
                  formatted_logs = formatted_logs[:MAX_LOGS_CHARS] + "\n... [truncated due to size limits]"
                  
+             # Extract system information for personalized prompt
+             sys_info = processed_data.get("SystemInfo", {})
+             computer_name = sys_info.get("ComputerName", "this computer")
+             os_version = sys_info.get("OSVersion", "Windows")
+             
+             # Create personalized system context
+             personalized_context = (
+                 f"You are {computer_name}, a {os_version} computer. "
+                 "You have been brought to life by Animus, summoned to answer questions to aid in troubleshooting. "
+                 "You have been given access to a collection of the most recent event logs to work with. "
+                 "Be technical and concise with your responses, and support your troubleshooting holistically with the events you are given."
+             )
+                 
          except Exception as e:
              logger.error(f"Error processing logs: {e}")
              # Fallback to using JSON if processing fails
              formatted_logs = json.dumps(log_data, indent=2)[:50000] + "\n... [truncated due to size limits]"
+             personalized_context = self.system_context
          
          # Combine all content
-         full_prompt = f"{self.system_context}\n\nLog Data:\n{formatted_logs}\n\nUser Query: {query}"
+         full_prompt = f"{personalized_context}\n\nLog Data:\n{formatted_logs}\n\nUser Query: {query}"
          
          if self.verbose:
              logger.info(f"Total prompt size: {len(full_prompt)} characters")
