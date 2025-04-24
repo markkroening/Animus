@@ -1,11 +1,17 @@
 # -*- mode: python ; coding: utf-8 -*-
+import os
 
+# Get the absolute path to the animus_cli directory
+animus_cli_dir = os.path.join(os.path.dirname(os.path.abspath(SPEC)), 'animus_cli')
 
 a = Analysis(
-    ['animus_cli.py'],
+    ['animus_cli/main.py'],  # Changed to use main.py as entry point
     pathex=[],
     binaries=[],
-    datas=[('powershell/collect_logs.ps1', 'powershell')],
+    datas=[
+        ('powershell/collect_logs.ps1', 'powershell'),
+        (animus_cli_dir, 'animus_cli'),  # Include the entire animus_cli directory
+    ],
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},
@@ -22,7 +28,7 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name='AnimusCLI',
+    name='animus',  # Changed to lowercase to match command name
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

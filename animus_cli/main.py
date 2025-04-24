@@ -23,29 +23,62 @@ import platform
 import threading # Added for animation
 IS_WINDOWS = platform.system() == "Windows"
 
-# Determine if running as a bundled executable (PyInstaller)
-if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
-    # Running in a bundle
+# More robust bundle detection
+IS_BUNDLED = False
+APP_BASE_DIR = None
+BUNDLED_DATA_DIR = None
+
+# Check if we're running from Program Files
+def is_installed_in_program_files():
+    try:
+        if not IS_WINDOWS:
+            return False
+        program_files = os.environ.get('ProgramFiles', '')
+        if not program_files:
+            return False
+        exe_path = os.path.abspath(sys.executable)
+        return exe_path.lower().startswith(program_files.lower())
+    except:
+        return False
+
+# Determine execution context
+if getattr(sys, 'frozen', False) or hasattr(sys, '_MEIPASS'):
     IS_BUNDLED = True
-    # Base path is the directory containing the executable
     APP_BASE_DIR = os.path.dirname(sys.executable)
-    # Path to bundled data files (like the PowerShell script)
-    BUNDLED_DATA_DIR = sys._MEIPASS
+    BUNDLED_DATA_DIR = getattr(sys, '_MEIPASS', APP_BASE_DIR)
+else:
+    IS_BUNDLED = False
+    APP_BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    BUNDLED_DATA_DIR = APP_BASE_DIR
+
+# Set up paths based on installation status
+if IS_BUNDLED and is_installed_in_program_files():
+    # When properly installed in Program Files
+    INSTALL_DIR = Path(os.environ['ProgramFiles']) / "Animus"
+    DEFAULT_OUTPUT_PATH = INSTALL_DIR / "logs" / "animus_logs.json"
+    SCRIPT_DIR = Path(BUNDLED_DATA_DIR) / "animus_cli"
+    POWERSHELL_DIR = Path(BUNDLED_DATA_DIR) / "powershell"
+    LOG_COLLECTOR_SCRIPT = POWERSHELL_DIR / "collect_logs.ps1"
+elif IS_BUNDLED:
+    # When running as bundle but not in Program Files (development/testing)
+    INSTALL_DIR = Path(APP_BASE_DIR)
+    DEFAULT_OUTPUT_PATH = INSTALL_DIR / "logs" / "animus_logs.json"
+    SCRIPT_DIR = Path(BUNDLED_DATA_DIR) / "animus_cli"
+    POWERSHELL_DIR = Path(BUNDLED_DATA_DIR) / "powershell"
+    LOG_COLLECTOR_SCRIPT = POWERSHELL_DIR / "collect_logs.ps1"
 else:
     # Running as a normal script
-    IS_BUNDLED = False
-    # Base path is the project root (assuming standard structure)
-    APP_BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    BUNDLED_DATA_DIR = APP_BASE_DIR # Not strictly needed, but avoids errors
+    SCRIPT_DIR = Path(os.path.abspath(__file__)).parent
+    PROJECT_ROOT = SCRIPT_DIR.parent
+    POWERSHELL_DIR = PROJECT_ROOT / "powershell"
+    LOG_COLLECTOR_SCRIPT = POWERSHELL_DIR / "collect_logs.ps1"
+    DEFAULT_OUTPUT_PATH = Path(os.getcwd()) / "logs" / "animus_logs.json"
 
-# Adjust paths based on execution context
-if not IS_BUNDLED:
-    SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-    PROJECT_ROOT = os.path.dirname(SCRIPT_DIR)
-    POWERSHELL_DIR = os.path.join(PROJECT_ROOT, "powershell")
-    LOG_COLLECTOR_SCRIPT = os.path.join(POWERSHELL_DIR, "collect_logs.ps1")
-    DEFAULT_OUTPUT_PATH = os.path.join(os.getcwd(), "logs", "animus_logs.json")
-    os.makedirs(os.path.dirname(DEFAULT_OUTPUT_PATH), exist_ok=True)
+# Create output directory if needed (will be skipped if no permission)
+try:
+    DEFAULT_OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
+except Exception:
+    pass  # We'll handle permission issues when actually writing
 
 # Unused! These comments and code are for local Llama model files, not needed for Google Gemini API
 # Handle command history support via standard readline
@@ -471,8 +504,8 @@ class LogParser:
             return None
 
 # Import LLM Manager
-from .llm_manager import LLMManager, GeminiAPIError
-from .log_processor import process_log_file
+from animus_cli.llm_manager import LLMManager, GeminiAPIError
+from animus_cli.log_processor import process_log_file
 
 class AnimusCLI:
     """Main CLI application class for Animus"""
@@ -1062,29 +1095,46 @@ def parse_arguments():
 
 def collect_logs(output_path, hours_back=48, max_events=500, include_security=True, force_collect=False):
     """Call PowerShell script to collect Windows Event Logs"""
-    # Prepare PowerShell command with appropriate path handling
-    security_param = "false" if not include_security else "true"
+    # Convert paths to Path objects and resolve them
+    script_path = Path(LOG_COLLECTOR_SCRIPT).resolve()
+    output_file_path = Path(output_path).resolve()
     
-    # Ensure the script path is properly formatted
-    script_path = os.path.normpath(LOG_COLLECTOR_SCRIPT)
-    output_file_path = os.path.normpath(output_path)
+    # Check if we need admin rights (either for Program Files or Security logs)
+    needs_admin = (
+        str(output_file_path).lower().startswith(os.environ.get('ProgramFiles', '').lower()) or
+        (include_security and IS_WINDOWS)
+    )
     
-    # For Security logs on Windows, we need to run PowerShell as Administrator
-    admin_note = ""
-    if include_security and IS_WINDOWS:
-        admin_note = "\nNote: For Security logs may need admin privileges."
-    
-    ps_command = [
-        "powershell", 
-        "-ExecutionPolicy", "Bypass", 
-        "-File", script_path,
-        "-OutputFile", output_file_path,
-        "-HoursBack", str(hours_back),
-        "-MaxEvents", str(max_events),
-        "-IncludeSecurity", security_param
-    ]
+    # If we need admin rights, always use elevated PowerShell
+    if needs_admin:
+        print(f"{Fore.YELLOW}Note: Administrator privileges required for log collection.{Style.RESET_ALL}")
+        ps_command = [
+            "powershell",
+            "-Command",
+            f"Start-Process powershell -Verb RunAs -Wait -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-File','{script_path}','-OutputFile','{output_file_path}','-HoursBack','{hours_back}','-MaxEvents','{max_events}','-IncludeSecurity','{str(include_security).lower()}'"
+        ]
+    else:
+        ps_command = [
+            "powershell", 
+            "-ExecutionPolicy", "Bypass", 
+            "-File", str(script_path),
+            "-OutputFile", str(output_file_path),
+            "-HoursBack", str(hours_back),
+            "-MaxEvents", str(max_events),
+            "-IncludeSecurity", str(include_security).lower()
+        ]
     
     try:
+        # Ensure output directory exists
+        try:
+            output_file_path.parent.mkdir(parents=True, exist_ok=True)
+        except PermissionError:
+            if not needs_admin:
+                print(f"Error: Cannot create output directory: {output_file_path.parent}", file=sys.stderr)
+                return False
+            # If we need admin, continue anyway as the elevated process will create the directory
+        
+        # Run the command
         process = subprocess.run(
             ps_command,
             capture_output=True,
@@ -1096,21 +1146,25 @@ def collect_logs(output_path, hours_back=48, max_events=500, include_security=Tr
             print(f"Error running log collector: {process.stderr}", file=sys.stderr)
             return False
             
+        # Wait a moment for file to be written
+        time.sleep(1)
+            
         # Verify the output file was created
-        if not os.path.exists(output_path):
-            print(f"Error: Log file was not created at {output_path}", file=sys.stderr)
+        if not output_file_path.exists():
+            print(f"Error: Log file was not created at {output_file_path}", file=sys.stderr)
             return False
         
         # Verify JSON validity
         try:
-            with open(output_path, 'r', encoding='utf-8-sig') as f:
+            with output_file_path.open('r', encoding='utf-8-sig') as f:
                 json.load(f)
         except json.JSONDecodeError as e:
             # Try with regular utf-8
             try:
-                with open(output_path, 'r', encoding='utf-8') as f:
+                with output_file_path.open('r', encoding='utf-8') as f:
                     json.load(f)
             except json.JSONDecodeError as e:
+                print(f"Error: Invalid JSON in log file: {e}", file=sys.stderr)
                 return False
             
         return True
@@ -1180,12 +1234,13 @@ def analyze_logs(log_file_path, query=None, auto_collect=True, auto_collect_age=
         model_name: Name of the Gemini model to use
         verbose: Whether to show verbose output
     """
+    # Convert log_file_path to Path object and resolve it
+    log_file_path = Path(log_file_path).resolve()
+
     # Check PowerShell requirements early (only if needed)
     if IS_WINDOWS and auto_collect:
         if not check_powershell_requirements():
             print(f"{Fore.RED}PowerShell requirements not met. Log collection might fail.")
-            # Decide if we should exit or just warn - for now, warn
-            # return 1 # Or sys.exit(1)
 
     # Check for Gemini API key if in QA mode
     if qa_mode:
@@ -1198,15 +1253,17 @@ def analyze_logs(log_file_path, query=None, auto_collect=True, auto_collect_age=
             print(f"{Fore.YELLOW}You can get a key from https://ai.google.dev/")
             print(f"{Fore.YELLOW}Continuing with basic analysis only.{Style.RESET_ALL}")
 
+    # Ensure the output directory exists
+    log_file_path.parent.mkdir(parents=True, exist_ok=True)
+
     # Instantiate the CLI controller
-    # Pass the explicit output path from args if provided
     cli = AnimusCLI(
         auto_collect=auto_collect,
         auto_collect_age_hours=auto_collect_age,
         force_collect=force_collect,
         qa_mode=qa_mode,
         verbose=verbose,
-        output_path=log_file_path,
+        output_path=str(log_file_path),
         model_name=model_name or "gemini-1.5-flash-latest"
     )
 
@@ -1216,37 +1273,37 @@ def analyze_logs(log_file_path, query=None, auto_collect=True, auto_collect_age=
 
     try:
         # Load initial logs (or collect if needed)
-        if force_collect or not os.path.exists(cli.output_path) or (auto_collect and check_log_freshness(cli.output_path, auto_collect_age) is False):
+        if force_collect or not log_file_path.exists() or (auto_collect and check_log_freshness(log_file_path, auto_collect_age) is False):
             cli.print_status("Collecting logs...", "info")
             success = collect_logs(
-                output_path=cli.output_path, # Use resolved output path
+                output_path=str(log_file_path),
                 hours_back=auto_collect_age,
                 force_collect=force_collect
             )
             
             if success:
-                cli.load_logs() # Load after successful collection
+                cli.load_logs()
             else:
                 cli.print_status("Log collection failed. Trying to load existing logs...", "warning")
-                cli.load_logs() # Attempt to load anyway if collection fails
+                cli.load_logs()
         else:
-            cli.load_logs() # Just load existing logs
+            cli.load_logs()
         
         # If a specific query is provided, process it and exit
         if query:
-            if not cli.check_log_loaded(): return 1 # Ensure logs are loaded
+            if not cli.check_log_loaded(): return 1
             if not qa_mode:
                  cli.print_status("Query provided but QA mode is not enabled. Use --qa to ask questions.", "warning")
-                 return 1 # Exit if not in QA mode but query given
+                 return 1
             else:
                  cli.print_status(f"Processing query: {query}")
-                 cli.process_query(query) # Process the single query in QA mode
-                 return 0 # Exit after single query
+                 cli.process_query(query)
+                 return 0
 
         # If QA mode is enabled (and no single query was given), start the interactive loop
         elif qa_mode:
             if not cli.check_log_loaded(): return 1
-            cli.start_qa_mode() # Start interactive Q&A
+            cli.start_qa_mode()
             return 0
 
         # If not QA mode and no query, maybe just show status?
@@ -1266,6 +1323,12 @@ def main():
     if IS_WINDOWS:
         init(autoreset=True) # Initialize colorama on Windows
 
+    # Debug output to understand execution context
+    print(f"{Fore.CYAN}Debug: Running as bundled exe: {IS_BUNDLED}")
+    print(f"{Fore.CYAN}Debug: App base directory: {APP_BASE_DIR}")
+    print(f"{Fore.CYAN}Debug: Default output path: {DEFAULT_OUTPUT_PATH}")
+    print(f"{Fore.CYAN}Debug: Current working directory: {os.getcwd()}{Style.RESET_ALL}")
+
     args = parse_arguments()
 
     # Map log collection flags
@@ -1276,12 +1339,12 @@ def main():
     # Set verbosity based on args
     verbose = args.verbose
 
-    # Determine log file path
-    log_file_path = args.output if args.output else DEFAULT_OUTPUT_PATH
-    # Ensure the directory for the log file exists (skip if no directory in path)
-    output_dir = os.path.dirname(log_file_path)
-    if output_dir:
-        os.makedirs(output_dir, exist_ok=True)
+    # Determine log file path and ensure it's a proper Path object
+    log_file_path = Path(args.output if args.output else DEFAULT_OUTPUT_PATH).resolve()
+    print(f"{Fore.CYAN}Debug: Final log file path: {log_file_path}{Style.RESET_ALL}")
+    
+    # Ensure the directory for the log file exists
+    log_file_path.parent.mkdir(parents=True, exist_ok=True)
 
     # Call the main analysis function with mapped arguments
     exit_code = analyze_logs(

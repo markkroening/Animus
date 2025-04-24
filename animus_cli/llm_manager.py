@@ -14,7 +14,7 @@ from typing import Dict, Any, Optional, Tuple
 from dotenv import load_dotenv
 import google.generativeai as genai
 
-from .log_processor import LogProcessor, process_log_file
+from animus_cli.log_processor import LogProcessor, process_log_file
 
 # Configure logging
 logger = logging.getLogger(__name__)

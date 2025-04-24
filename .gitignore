@@ -4,7 +4,6 @@ __pycache__/
 *$py.class
 *.so
 .Python
-env/
 build/
 develop-eggs/
 dist/
@@ -16,19 +15,45 @@ lib64/
 parts/
 sdist/
 var/
+wheels/
 *.egg-info/
 .installed.cfg
 *.egg
 
 # Virtual Environment
 venv/
+env/
 ENV/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Logs and databases
+*.log
+*.sqlite
+logs/
+*.json
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# Installer builds
+output/
+*.exe
+
+# Environment variables
 .env
 
-# Logs and data
-logs/
-*.log
-*.json
+# Temporary files
+*.tmp
+*.bak
+*.swp
+*~
 
 # API Keys and sensitive data
 .env
