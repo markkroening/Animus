@@ -6,13 +6,13 @@ animus_cli_dir = os.path.join(os.path.dirname(os.path.abspath(SPEC)), 'animus_cl
 
 a = Analysis(
     ['animus_cli/main.py'],  # Changed to use main.py as entry point
-    pathex=[],
+    pathex=[os.path.dirname(os.path.abspath(SPEC))],  # Add the project root to the path
     binaries=[],
     datas=[
         ('powershell/collect_logs.ps1', 'powershell'),
         (animus_cli_dir, 'animus_cli'),  # Include the entire animus_cli directory
     ],
-    hiddenimports=[],
+    hiddenimports=['animus_cli'],  # Add the package to hidden imports
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],

@@ -3,124 +3,165 @@ description:
 globs: 
 alwaysApply: false
 ---
-# Animus CLI Architecture
+# Animus CLI Architecture (Refactored)
 
 ## Overview
-Animus CLI is a Windows-based command-line tool for local Windows Event Log analysis. It combines PowerShell-based log collection with AI-powered log interpretation using Google's Gemini API. The system is designed to run entirely on the target Windows workstation, providing technicians with natural language insights about system events.
+Animus CLI is a Windows-based command-line tool for local Windows Event Log analysis. It combines PowerShell-based log collection with AI-powered log interpretation using Google's Gemini API. The application is structured into several modules for better organization and maintainability.
 
 ## Core Components
 
-### 1. Main CLI Application (animus_cli/main.py)
-- Entry point for the application
-- Handles command-line argument parsing
-- Manages the interactive Q&A loop
-- Coordinates between log collection and LLM analysis
-- Provides user interface and output formatting
+### 1. Entry Point (`animus_cli/main.py`)
+- **Purpose:** Main executable script and orchestrator.
+- **Responsibilities:**
+    - Parses command-line arguments (`argparse`).
+    - Loads environment variables (`dotenv`).
+    - Instantiates the `AnimusCLI` controller.
+    - Determines the execution flow (collect, load, query, interactive).
+    - Calls appropriate methods on the `AnimusCLI` instance.
+    - Handles top-level application exit codes.
 
-### 2. Log Collection (powershell/collect_logs.ps1)
-- PowerShell script for gathering Windows Event Logs
-- Collects System, Application, and Security events
-- Gathers system metadata and hardware information
-- Outputs structured JSON format
-- Configurable collection window (default 48 hours)
+### 2. Configuration (`animus_cli/config.py`)
+- **Purpose:** Centralized configuration and constants.
+- **Responsibilities:**
+    - Defines constants (`ANIMUS_VERSION`, `DEFAULT_MODEL_NAME`, etc.).
+    - Provides the application banner (`ANIMUS_BANNER`).
+    - Determines application paths (`APP_BASE_DIR`, `POWERSHELL_DIR`, etc.) based on execution context (script vs. bundle).
+    - Defines the default log output path (`DEFAULT_OUTPUT_PATH`).
+    - Ensures the default log directory exists.
 
-### 3. Log Processing (animus_cli/log_processor.py)
-- Parses and structures the collected log data
-- Provides data access and filtering methods
-- Handles log file management
-- Implements log summarization and analysis
+### 3. Data Models (`animus_cli/data_models.py`)
+- **Purpose:** Defines structured representations of log and system data.
+- **Key Classes:**
+    - `EventLevel` (Enum): Represents event severity levels.
+    - `EventLogEntry` (Dataclass): Represents a single event log record. Includes a `from_dict` factory method.
+    - `SystemInfo` (Dataclass): Represents system hardware and OS information. Includes a `from_dict` factory method.
+    - `LogCollection` (Dataclass): Represents the entire collection of logs and system info. Includes properties for accessing combined events (`all_events`), errors (`error_events`), warnings (`warning_events`), and counts (`event_count`), as well as a `get_summary` method.
 
-### 4. LLM Integration (animus_cli/llm_manager.py)
-- Manages interaction with Google's Gemini API
-- Handles API key management
-- Formats prompts for log analysis
-- Processes and formats LLM responses
+### 4. Log Parser (`animus_cli/parser.py`)
+- **Purpose:** Parses JSON log data into `LogCollection` objects.
+- **Key Class:**
+    - `LogParser`: Contains static methods (`parse_json_data`, `parse_file`) to read and interpret the JSON output from the PowerShell script, converting it into the structured data models. Assumes UTF-8/UTF-8-SIG encoding.
+
+### 5. Log Collector (`animus_cli/collector.py`)
+- **Purpose:** Interfaces with the PowerShell log collection script.
+- **Key Function:**
+    - `collect_logs`: Constructs and executes the `powershell.exe` command to run `collect_logs.ps1`. Handles command arguments, potential elevation requirements (`Start-Process -Verb RunAs`), basic process execution checks, and verification that an output file was created.
+
+### 6. CLI Controller (`animus_cli/cli.py`)
+- **Purpose:** Encapsulates the core interactive and processing logic.
+- **Key Class:**
+    - `AnimusCLI`:
+        - Initializes and manages the `LogCollection` state.
+        - Initializes and manages the `LLMManager` instance (`_ensure_llm`).
+        - Provides methods to load logs (`load_logs`), collect and load (`collect_and_load_logs`), show status (`show_status`), and process queries (`process_query`).
+        - Implements the interactive Q&A loop (`run_interactive_mode`).
+        - Handles interaction logic, basic command parsing within interactive mode, and calls to the LLM.
+
+### 7. LLM Integration (`animus_cli/llm_manager.py`) - Assumed
+- **Purpose:** Manages interaction with the Google Gemini API.
+- **Responsibilities:** (Based on typical usage)
+    - Handles API key management (likely reads from environment).
+    - Formats prompts for log analysis based on user queries and log data.
+    - Sends requests to the Gemini API.
+    - Processes and returns the LLM's responses.
+    - Handles API-specific errors (`GeminiAPIError`).
+
+### 8. PowerShell Script (`powershell/collect_logs.ps1`) - External
+- **Purpose:** Performs the actual Windows Event Log collection.
+- **Responsibilities:**
+    - Queries WMI and Event Logs based on provided parameters (hours, max events, include security).
+    - Gathers system metadata.
+    - Formats the collected data into a structured JSON output file.
 
 ## Data Flow
 
-1. Application Startup
-   ```
-   animus.bat
-      │
-      ▼
-   main.py
-      │
-      ▼
-   collect_logs.ps1 → animus_logs.json
-      │
-      ▼
-   log_processor.py
-      │
-      ▼
-   Interactive Q&A Loop
-   ```
+1.  **Startup (`main.py`)**:
+    *   Parse CLI args.
+    *   Instantiate `AnimusCLI`.
+2.  **Log Acquisition (if needed)**:
+    *   `main.py` calls `cli.collect_and_load_logs` or `cli.load_logs`.
+    *   `cli.collect_and_load_logs` calls `collector.collect_logs`.
+    *   `collector.collect_logs` executes `powershell/collect_logs.ps1`.
+    *   PowerShell script writes `animus_logs.json`.
+    *   `cli.load_logs` calls `parser.LogParser.parse_file`.
+    *   `LogParser` reads JSON, uses `data_models` to create a `LogCollection` object, stored in `cli.log_collection`.
+3.  **Query Processing (`main.py` -> `cli.py`)**:
+    *   If single query or interactive mode: `cli.process_query(user_query)` is called.
+    *   `cli.process_query` ensures LLM is initialized (`_ensure_llm`).
+    *   Reads raw JSON data from the log file.
+    *   Calls `llm_manager.query_logs` with the query and raw data.
+    *   `llm_manager` interacts with the Gemini API.
+    *   Response is printed to the console.
+4.  **Interactive Mode (`cli.run_interactive_mode`)**:
+    *   Displays banner and status (`cli.show_status`).
+    *   Enters a loop, reading user input.
+    *   Handles basic commands (`exit`, `status`, `help`) or calls `cli.process_query` for analysis requests.
 
-2. Log Collection Process
-   - PowerShell script collects events from Windows Event Logs
-   - Filters events based on time window and type
-   - Gathers system information
-   - Outputs structured JSON to %LOCALAPPDATA%\Animus
-
-3. Log Processing
-   - Loads and parses JSON log data
-   - Provides structured access to events and metadata
-   - Implements filtering and search capabilities
-   - Manages log file lifecycle
-
-4. LLM Analysis
-   - Formats log data into prompts for Gemini API
-   - Sends queries and receives responses
-   - Processes and formats answers for display
-   - Handles API errors and retries
-
-## User Interface
-
-### Command Line Interface
-- Interactive prompt for questions
-- Command history support
-- Color-coded output
-- Status messages and progress indicators
-
-### Available Commands
-- `refresh`: Recollect logs
-- `exit`: End session
-- `--hours`: Override collection window
-- `--model-path`: Specify model location
-- `--no-download`: Offline mode
-- `--tiny`: Force lite model
-
-## File Structure
+## File Structure (Refactored)
 ```
 animus_cli/
-├── main.py           # Main application entry point
-├── llm_manager.py    # Gemini API integration
-├── log_processor.py  # Log data handling
-└── __init__.py      # Package initialization
+├── __init__.py       # Package marker
+├── main.py           # Main application entry point & orchestrator
+├── config.py         # Constants and path configuration
+├── data_models.py    # Dataclasses for log/system info
+├── parser.py         # JSON log parser
+├── collector.py      # PowerShell script execution logic
+├── cli.py            # Core CLI interaction logic and state management
+└── llm_manager.py    # Gemini API integration (Assumed)
 
 powershell/
 └── collect_logs.ps1  # Log collection script
 
-animus.bat           # Windows launcher script
+.env                  # Optional: For storing GEMINI_API_KEY
+# Other files (e.g., requirements.txt, README.md, build scripts)
 ```
 
+## Distribution Pipeline
+
+Animus uses a two-stage distribution pipeline to create a professional Windows installer:
+
+### Stage 1: PyInstaller
+- **Purpose:** Converts the Python application into a standalone executable
+- **Configuration:** `AnimusCLI.spec` file
+- **Output:** `dist/animus.exe` (standalone executable)
+- **Process:** Packages Python code, dependencies, and interpreter into a single executable
+
+### Stage 2: Inno Setup
+- **Purpose:** Creates a professional Windows installer
+- **Configuration:** `Animus.iss` file
+- **Output:** `output/AnimusSetup.exe` (Windows installer)
+- **Process:** Packages the executable and additional resources into an installer
+
+### Build Process
+The build process is orchestrated by `build_installer.bat`, which:
+1. Checks if Inno Setup is installed and installs it if necessary
+2. Runs Inno Setup to create the installer
+3. Places the final installer in the `output` directory
+
+### Import Structure
+The application uses absolute imports to ensure compatibility with PyInstaller:
+```python
+# Example of absolute imports
+from animus_cli.config import DEFAULT_OUTPUT_PATH, DEFAULT_MODEL_NAME
+from animus_cli.cli import AnimusCLI
+```
+
+### Execution Methods
+The application can be executed in several ways:
+1. **Direct Python Execution:** `python -m animus_cli.main`
+2. **Batch File Execution:** `animus_direct.bat` (runs the Python module)
+3. **Executable Execution:** `animus.bat` (runs the PyInstaller-generated executable)
+4. **Installer Execution:** `AnimusSetup.exe` (installs and runs the application)
+
 ## Deployment
-- Single executable package built with PyInstaller
-- Includes all Python dependencies
-- Bundles PowerShell script
-- Self-contained deployment
-- No installation required
+- Uses a two-stage distribution pipeline with PyInstaller and Inno Setup
+- PyInstaller creates a standalone executable
+- Inno Setup creates a professional Windows installer
+- The modular structure is preserved in the packaged application
 
 ## Security Considerations
-- Local-only execution
-- No persistent background processes
-- Optional cleanup of temporary files
-- No data transmission to external servers (except Gemini API)
-- API key management via environment variables
+- Unchanged from previous description. Focus remains on local execution and secure API key handling (via `.env` or environment variables). Elevation is requested only when necessary for log collection.
 
 ## Error Handling
-- Graceful handling of missing logs
-- API error recovery
-- Memory management for large log files
-- PowerShell execution policy handling
-- File permission management
+- Simplified as per refactoring request. Basic error messages are printed to `stderr` for critical issues like file not found, JSON parsing errors, LLM initialization failures, or PowerShell script execution problems. Less verbose than the original.
 
