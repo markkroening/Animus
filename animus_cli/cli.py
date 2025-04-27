@@ -77,34 +77,23 @@ class AnimusCLI:
             return False
 
     def collect_and_load_logs(
-        self, hours: int, max_events: int, include_security: bool, force: bool
+        self, hours: int, max_events: int, force: bool
     ) -> bool:
         """Collect logs using the PowerShell script and then load them.
 
         Args:
             hours: Hours of logs to collect.
             max_events: Max events per log type.
-            include_security: Whether to include security logs.
             force: Force collection even if recent logs exist (ignored here).
 
         Returns:
             True if collection and loading were successful, False otherwise.
         """
-        # Determine if elevation might be needed (simplified check for Windows)
-        needs_elevation = False
-        if sys.platform == "win32":
-             # Check if security logs are requested or output is in Program Files
-             program_files_path = os.environ.get('ProgramFiles', 'C:\\Program Files').lower()
-             needs_elevation = include_security or \
-                               str(self.output_path.resolve()).lower().startswith(program_files_path)
-
-        print(f"Starting log collection (Elevated: {needs_elevation})...", file=sys.stderr)
+        print(f"Starting log collection...", file=sys.stderr)
         collection_successful = collect_logs(
             output_path=self.output_path,
             hours_back=hours,
-            max_events=max_events,
-            include_security=include_security,
-            elevated=needs_elevation
+            max_events=max_events
         )
 
         if collection_successful:

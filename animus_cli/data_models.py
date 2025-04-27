@@ -135,7 +135,6 @@ class LogCollection:
     system_info: SystemInfo
     system_events: List[EventLogEntry]
     application_events: List[EventLogEntry]
-    security_events: List[EventLogEntry]
 
     # Combined list of all events, calculated on demand
     _all_events: Optional[List[EventLogEntry]] = field(init=False, default=None)
@@ -146,11 +145,8 @@ class LogCollection:
         if self._all_events is None:
             self._all_events = (
                 self.system_events +
-                self.application_events +
-                self.security_events
+                self.application_events
             )
-            # Optionally sort by time if needed, assuming time_created is parsable
-            # self._all_events.sort(key=lambda e: e.time_created, reverse=True)
         return self._all_events
 
     @property
@@ -175,7 +171,6 @@ class LogCollection:
         return {
             "system": len(self.system_events),
             "application": len(self.application_events),
-            "security": len(self.security_events),
             "total": len(self.all_events),
             "errors": len(self.error_events),
             "warnings": len(self.warning_events)

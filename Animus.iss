@@ -48,8 +48,6 @@ Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: de
 [Registry]
 ; Add installation directory to PATH
 Root: HKLM; Subkey: "SYSTEM\CurrentControlSet\Control\Session Manager\Environment"; ValueType: expandsz; ValueName: "Path"; ValueData: "{olddata};{app}"; Check: NeedsAddPath(ExpandConstant('{app}'))
-; Add compatibility flags to prevent UAC prompts
-Root: HKLM; Subkey: "SOFTWARE\Microsoft\Windows NT\CurrentVersion\AppCompatFlags\Layers"; ValueType: string; ValueName: "{app}\animus.bat"; ValueData: "RUNASADMIN"; Flags: uninsdeletevalue
 
 [Code]
 function NeedsAddPath(Param: string): boolean;
@@ -67,17 +65,9 @@ begin
 end;
 
 [Run]
-; Create command-line wrapper in the installation directory
-Filename: "cmd"; Parameters: "/c echo @echo off > ""{app}\animus.cmd"" && echo ""{app}\animus.bat"" %%* >> ""{app}\animus.cmd"""; Flags: runhidden
-
 ; Install Python dependencies
 Filename: "powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -Command ""& {{pip install -r '{app}\requirements.txt'}}"""; Flags: runhidden; StatusMsg: "Installing Python dependencies..."
 Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#StringChange(MyAppName, '&', '&&')}}"; Flags: nowait postinstall skipifsilent
 
-[UninstallRun]
-; Remove command-line wrapper
-Filename: "cmd"; Parameters: "/c del ""{app}\animus.cmd"""; Flags: runhidden
-
 [UninstallDelete]
-Type: files; Name: "{app}\animus.cmd"
 Type: filesandordirs; Name: "{app}\logs" 

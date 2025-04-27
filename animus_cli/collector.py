@@ -14,18 +14,14 @@ from animus_cli.config import LOG_COLLECTOR_SCRIPT
 def collect_logs(
     output_path: Path,
     hours_back: int = 48,
-    max_events: int = 500,
-    include_security: bool = True,
-    elevated: bool = False
+    max_events: int = 500
 ) -> bool:
-    """Call the PowerShell script to collect Windows Event Logs.
+    """Call the PowerShell script to collect Windows Event Logs (system and application only).
 
     Args:
         output_path: The Path object where the JSON log file will be saved.
         hours_back: How many hours of logs to retrieve.
         max_events: Maximum number of events per log type.
-        include_security: Whether to include Security logs (often needs elevation).
-        elevated: If True, attempt to run the collection script with elevated privileges.
 
     Returns:
         True if the log collection script appears to have run successfully
@@ -44,9 +40,7 @@ def collect_logs(
         output_path.parent.mkdir(parents=True, exist_ok=True)
     except OSError as e:
         print(f"Error: Could not create output directory {output_path.parent}: {e}", file=sys.stderr)
-        # Don't immediately return if elevated, as the elevated process might create it.
-        if not elevated:
-            return False
+        return False
 
     # Construct the PowerShell command
     powershell_cmd = [
@@ -58,22 +52,6 @@ def collect_logs(
         "-HoursBack", str(hours_back),
         "-MaxEvents", str(max_events)
     ]
-    
-    if not include_security:
-        powershell_cmd.append("-IncludeSecurity:$false")
-
-    if elevated:
-        # Use Start-Process to run with elevation
-        elevate_cmd = [
-            "powershell.exe",
-            "-NoProfile",
-            "-ExecutionPolicy", "Bypass",
-            "-Command",
-            f"Start-Process powershell.exe -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-File','{script_path_str}','-OutputFile','{output_path_str}','-HoursBack','{hours_back}','-MaxEvents','{max_events}' -Verb RunAs -Wait"
-        ]
-        if not include_security:
-            elevate_cmd[-1] = elevate_cmd[-1].replace("' -Wait", "','-IncludeSecurity:$false' -Wait")
-        powershell_cmd = elevate_cmd
 
     try:
         # Run the PowerShell script

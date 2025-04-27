@@ -48,7 +48,6 @@ def main():
     logs_collected = cli.collect_and_load_logs(
         hours=48,  # Default value
         max_events=500,  # Default value
-        include_security=True,  # Always include security logs
         force=True  # Always force collection
     )
 

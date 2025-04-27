@@ -7,7 +7,7 @@ import sys
 
 # Basic application info
 ANIMUS_VERSION = "0.1.0"
-ANIMUS_BANNER = """
+ANIMUS_BANNER = r"""
 ╔═══════════════════════════════════════════════════════════╗
 ║   _____          .__                                        ║
 ║  /  _  \   ____  |__|  _____   __ __  ______         ║
@@ -40,10 +40,8 @@ SCRIPT_DIR = BUNDLED_DATA_DIR / "animus_cli"
 POWERSHELL_DIR = BUNDLED_DATA_DIR / "powershell"
 LOG_COLLECTOR_SCRIPT = POWERSHELL_DIR / "collect_logs.ps1"
 
-# Default output path - always use the application root directory for logs
-# This ensures logs are stored in the same place regardless of how the app is launched
-APP_ROOT_DIR = Path(__file__).parent.parent.resolve()
-DEFAULT_OUTPUT_PATH = APP_ROOT_DIR / "logs" / "animus_logs.json"
+# Default output path - use LOCALAPPDATA for user-writable logs
+DEFAULT_OUTPUT_PATH = Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "Animus" / "logs" / "animus_logs.json"
 
 # Ensure the default logs directory exists
 try:

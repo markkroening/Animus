@@ -45,8 +45,7 @@ class LogParser:
                 time_range=collection_info.get('TimeRange', {}),
                 system_info=system_info,
                 system_events=parse_event_list(events_data.get('System', [])),
-                application_events=parse_event_list(events_data.get('Application', [])),
-                security_events=parse_event_list(events_data.get('Security', []))
+                application_events=parse_event_list(events_data.get('Application', []))
             )
         except Exception as e:
             # Keep minimal error logging for critical parsing failures
