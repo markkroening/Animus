@@ -23,6 +23,11 @@ SolidCompression=yes
 PrivilegesRequired=admin
 SetupLogging=yes
 WizardStyle=modern
+; Silent installation support
+DisableWelcomePage=no
+DisableReadyPage=no
+DisableFinishedPage=no
+AllowNoIcons=yes
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
@@ -31,11 +36,13 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
 
 [Files]
-; Main application files
-Source: "animus_cli\*"; DestDir: "{app}\animus_cli"; Flags: ignoreversion recursesubdirs createallsubdirs
-Source: "powershell\*"; DestDir: "{app}\powershell"; Flags: ignoreversion recursesubdirs createallsubdirs
+; Copy Python source code (excluding scripts dir)
+Source: "animus_cli\*"; DestDir: "{app}\animus_cli"; Excludes: "scripts"; Flags: ignoreversion recursesubdirs createallsubdirs
+; Copy PowerShell script to expected location
+Source: "animus_cli\scripts\collect_logs.ps1"; DestDir: "{app}\scripts"; Flags: ignoreversion
 Source: "animus.bat"; DestDir: "{app}"; Flags: ignoreversion
 Source: "requirements.txt"; DestDir: "{app}"; Flags: ignoreversion
+Source: "README.md"; DestDir: "{app}"; Flags: ignoreversion
 
 ; Create logs directory
 [Dirs]

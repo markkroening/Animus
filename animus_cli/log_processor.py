@@ -8,6 +8,7 @@ import json
 from collections import defaultdict
 from datetime import datetime
 from typing import Dict, List, Any, Optional, Tuple
+from animus_cli.data_models import LogCollection, SystemInfo, EventLogEntry # Import necessary models
 
 
 class LogProcessor:
@@ -22,82 +23,75 @@ class LogProcessor:
         """
         self.verbose = verbose
     
-    def process_logs(self, log_data: Dict[str, Any]) -> Dict[str, Any]:
+    def process_logs(self, log_collection: LogCollection) -> Dict[str, Any]:
         """
         Process raw log data to make it more LLM-friendly.
         
         Args:
-            log_data: Raw log data dictionary as loaded from animus_logs.json
+            log_collection: Parsed LogCollection object
             
         Returns:
             Processed log data optimized for LLM consumption
         """
-        if not log_data or not isinstance(log_data, dict):
+        if not log_collection:
             raise ValueError("Invalid log data format")
             
         # Create a new structure for processed logs
         processed_data = {
-            "CollectionInfo": log_data.get("CollectionInfo", {}),
-            "SystemInfo": self._extract_system_info(log_data.get("SystemInfo", {})),
-            "EventSummary": self._generate_event_summary(log_data),
+            # Extract top-level info from LogCollection
+            "CollectionInfo": { # Nest collection info as format_for_llm expects
+                "CollectionTime": log_collection.collection_time,
+                "TimeRange": log_collection.time_range,
+            },
+            "SystemInfo": self._extract_system_info(log_collection.system_info),
+            "EventSummary": self._generate_event_summary(log_collection),
             "AggregatedEvents": {},
         }
         
         # Process events by log type
-        events_data = log_data.get("Events", {})
-        for log_type in ["System", "Application", "Security"]:
-            if log_type in events_data:
-                processed_data["AggregatedEvents"][log_type] = self._aggregate_events(
-                    events_data[log_type]
-                )
-                
+        if log_collection.system_events:
+            processed_data["AggregatedEvents"]["System"] = self._aggregate_events(
+                log_collection.system_events
+            )
+        if log_collection.application_events:
+            processed_data["AggregatedEvents"]["Application"] = self._aggregate_events(
+                log_collection.application_events
+            )
+        # Add other log types here if LogCollection includes them in the future
+        
         return processed_data
     
-    def _extract_system_info(self, system_info: Dict[str, Any]) -> Dict[str, Any]:
+    def _extract_system_info(self, system_info_obj: Optional[SystemInfo]) -> Dict[str, Any]:
         """
-        Extract and normalize system information for better LLM consumption.
+        Convert SystemInfo object to a dictionary suitable for formatting.
+        (Replaces old method that processed raw dict)
         
         Args:
-            system_info: Raw system information dictionary
+            system_info_obj: Parsed SystemInfo object.
             
         Returns:
-            Normalized system information
+            Dictionary representation of SystemInfo.
         """
-        result = {}
-        
-        # Extract OS information
-        os_info = system_info.get("OS", {})
-        if os_info:
-            result["OSVersion"] = f"{os_info.get('Caption', 'Unknown')} {os_info.get('Version', '')}"
-            result["OSBuild"] = os_info.get("BuildNumber", "Unknown")
-            result["InstallDate"] = os_info.get("InstallDate", "Unknown")
-            result["LastBootTime"] = os_info.get("LastBootUpTime", "Unknown")
-            result["Uptime"] = os_info.get("UpTime", "Unknown")
-        
-        # Extract Computer information
-        computer_info = system_info.get("Computer", {})
-        if computer_info:
-            result["ComputerName"] = computer_info.get("MachineName", computer_info.get("Name", "Unknown"))
-            result["Manufacturer"] = computer_info.get("Manufacturer", "Unknown")
-            result["Model"] = computer_info.get("Model", "Unknown")
-            result["TotalPhysicalMemory"] = computer_info.get("TotalPhysicalMemory", "Unknown")
-        
-        # Extract Processor information
-        processor_info = system_info.get("Processor", {})
-        if processor_info:
-            result["Processor"] = processor_info
+        if not system_info_obj:
+            return {"Error": "SystemInfo not available"}
             
-        # Extract Disk information
-        result["Disks"] = system_info.get("Disks", [])
-        
-        return result
+        # Convert dataclass to dict - simple approach
+        # We might need more sophisticated handling for nested objects/enums if any
+        try:
+            # Use vars() for simple dataclass to dict conversion
+            sys_info_dict = vars(system_info_obj)
+            # Optionally filter or rename keys if needed for format_for_llm
+            return sys_info_dict
+        except TypeError:
+             # Fallback or more robust conversion if needed
+             return {"Error": "Could not convert SystemInfo to dict"}
     
-    def _aggregate_events(self, events: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    def _aggregate_events(self, events: List[EventLogEntry]) -> List[Dict[str, Any]]:
         """
         Aggregate identical events to reduce redundancy.
         
         Args:
-            events: List of raw event dictionaries
+            events: List of parsed EventLogEntry objects
             
         Returns:
             List of aggregated events with occurrence counts and timestamps
@@ -108,15 +102,15 @@ class LogProcessor:
         for event in events:
             # Create a key based on Source, EventID, and partial Message
             # Getting first 100 chars of message to allow for minor differences
-            source = event.get("ProviderName", "")
-            event_id = event.get("EventID", 0)
-            message = event.get("Message", "")
+            source = event.provider_name or ""
+            event_id = event.event_id or 0
+            message = event.message or ""
             message_key = message[:100] if message else ""
             
             # Create a compound key for grouping
             group_key = f"{source}|{event_id}|{message_key}"
             
-            # Add to the appropriate group
+            # Add the event object to the appropriate group
             event_groups[group_key].append(event)
         
         # Convert groups into aggregated events
@@ -124,25 +118,21 @@ class LogProcessor:
         
         for group_key, group_events in event_groups.items():
             # Use the first event as the template
-            template_event = group_events[0].copy()
+            template_event = group_events[0]
             
             # Extract all timestamps
-            timestamps = [e.get("TimeCreated", "") for e in group_events]
-            
-            # Store aggregation data
-            template_event["OccurrenceCount"] = len(group_events)
-            template_event["Timestamps"] = sorted(timestamps, reverse=True)
+            timestamps = [e.time_created for e in group_events]
             
             # Keep only essential fields to reduce size
             aggregated_event = {
-                "LogName": template_event.get("LogName", ""),
-                "Level": template_event.get("Level", ""),
-                "EventID": template_event.get("EventID", 0),
-                "ProviderName": template_event.get("ProviderName", ""),
-                "Message": template_event.get("Message", ""),
-                "OccurrenceCount": template_event["OccurrenceCount"],
-                "Timestamps": template_event["Timestamps"][:10],  # Limit to first 10 timestamps
-                "AdditionalTimestamps": len(template_event["Timestamps"]) - 10 if len(template_event["Timestamps"]) > 10 else 0
+                "LogName": template_event.log_name,
+                "Level": template_event.level.value, # Use enum value
+                "EventID": template_event.event_id,
+                "ProviderName": template_event.provider_name,
+                "Message": template_event.message,
+                "OccurrenceCount": len(group_events),
+                "Timestamps": sorted(timestamps, reverse=True)[:10],  # Sort and Limit here
+                "AdditionalTimestamps": len(timestamps) - 10 if len(timestamps) > 10 else 0
             }
             
             aggregated_events.append(aggregated_event)
@@ -155,12 +145,12 @@ class LogProcessor:
         
         return aggregated_events
     
-    def _generate_event_summary(self, log_data: Dict[str, Any]) -> Dict[str, Any]:
+    def _generate_event_summary(self, log_collection: LogCollection) -> Dict[str, Any]:
         """
         Generate statistical summary of events.
         
         Args:
-            log_data: Raw log data dictionary
+            log_collection: Parsed LogCollection object
             
         Returns:
             Dictionary with statistical summaries
@@ -179,54 +169,53 @@ class LogProcessor:
             "TopEventIDs": []
         }
         
-        events_data = log_data.get("Events", {})
+        all_events = log_collection.system_events + log_collection.application_events
+        summary["TotalEvents"] = len(all_events)
         
-        # Count by log type
-        for log_type, events in events_data.items():
-            summary["ByLogType"][log_type] = len(events)
-            summary["TotalEvents"] += len(events)
-            
+        # Initialize counts
+        summary["ByLogType"]["System"] = len(log_collection.system_events)
+        summary["ByLogType"]["Application"] = len(log_collection.application_events)
+        # Add other log types if they exist in LogCollection in the future
+        
+        level_counts = defaultdict(int)
+        source_counts = defaultdict(int)
+        event_id_counts = defaultdict(int)
+        source_log_map = {}
+        event_id_log_map = {}
+        
+        for event in all_events:
             # Count by level
-            level_counts = defaultdict(int)
-            source_counts = defaultdict(int)
-            event_id_counts = defaultdict(int)
+            level_name = event.level.value # Use enum value
+            if level_name == "Critical": # Debug print specifically for critical events
+                print(f"DEBUG: Event {event.event_id} from {event.provider_name} counted as Critical.")
+            if level_name in summary["ByLevel"]:
+                summary["ByLevel"][level_name] += 1
             
-            for event in events:
-                level = event.get("Level", "")
-                if level:
-                    level_counts[level] += 1
+            # Count sources and event IDs
+            source = event.provider_name
+            if source:
+                source_counts[source] += 1
+                source_log_map[source] = event.log_name # Store log type for summary
                 
-                source = event.get("ProviderName", "")
-                if source:
-                    source_counts[source] += 1
-                
-                event_id = event.get("EventID", "")
-                if event_id:
-                    event_id_counts[event_id] += 1
-            
-            # Update level counts
-            for level, count in level_counts.items():
-                level_name = self._normalize_level_name(level)
-                if level_name in summary["ByLevel"]:
-                    summary["ByLevel"][level_name] += count
+            event_id = event.event_id
+            if event_id:
+                event_id_str = str(event_id)
+                event_id_counts[event_id_str] += 1
+                event_id_log_map[event_id_str] = event.log_name # Store log type for summary
         
-            # Find top sources for this log type
-            top_sources = sorted(source_counts.items(), key=lambda x: x[1], reverse=True)[:5]
-            summary["TopSources"].extend([
-                {"Source": source, "Count": count, "LogType": log_type}
-                for source, count in top_sources if count > 1
-            ])
-            
-            # Find top event IDs for this log type
-            top_event_ids = sorted(event_id_counts.items(), key=lambda x: x[1], reverse=True)[:5]
-            summary["TopEventIDs"].extend([
-                {"EventID": str(event_id), "Count": count, "LogType": log_type}
-                for event_id, count in top_event_ids if count > 1
-            ])
+        # Find top sources globally
+        top_sources = sorted(source_counts.items(), key=lambda x: x[1], reverse=True)[:5]
+        summary["TopSources"] = [
+            {"Source": source, "Count": count, "LogType": source_log_map.get(source, "Unknown")}
+            for source, count in top_sources if count > 1
+        ]
         
-        # Resort the global top lists
-        summary["TopSources"] = sorted(summary["TopSources"], key=lambda x: x["Count"], reverse=True)[:10]
-        summary["TopEventIDs"] = sorted(summary["TopEventIDs"], key=lambda x: x["Count"], reverse=True)[:10]
+        # Find top event IDs globally
+        top_event_ids = sorted(event_id_counts.items(), key=lambda x: x[1], reverse=True)[:5]
+        summary["TopEventIDs"] = [
+            {"EventID": event_id, "Count": count, "LogType": event_id_log_map.get(event_id, "Unknown")}
+            for event_id, count in top_event_ids if count > 1
+        ]
         
         return summary
     
@@ -271,11 +260,9 @@ class LogProcessor:
         sys_info = processed_data.get("SystemInfo", {})
         if sys_info:
             output.append("## SYSTEM INFORMATION")
-            output.append(f"OS: {sys_info.get('OSVersion', 'Unknown')}")
-            output.append(f"Computer: {sys_info.get('ComputerName', 'Unknown')}")
-            output.append(f"Uptime: {sys_info.get('Uptime', 'Unknown')}")
-            output.append(f"CPU: {sys_info.get('Processor', 'Unknown')}")
-            output.append(f"Memory: {sys_info.get('TotalPhysicalMemory', 'Unknown')}")
+            output.append(f"OS: {sys_info.get('os_version', 'Unknown')}")
+            output.append(f"Computer: {sys_info.get('computer_name', 'Unknown')}")
+            output.append(f"Uptime: {sys_info.get('uptime', 'Unknown')}")
             output.append("")
         
         # Add collection info
@@ -284,7 +271,7 @@ class LogProcessor:
             output.append("## COLLECTION INFORMATION")
             output.append(f"Collection Time: {coll_info.get('CollectionTime', 'Unknown')}")
             time_range = coll_info.get('TimeRange', {})
-            output.append(f"Time Range: {time_range.get('Start', 'Unknown')} to {time_range.get('End', 'Unknown')}")
+            output.append(f"Time Range: {time_range.get('StartTime', 'Unknown')} to {time_range.get('EndTime', 'Unknown')}")
             output.append("")
         
         # Add event summary statistics
@@ -301,6 +288,7 @@ class LogProcessor:
             
             # Add by level
             levels = summary.get("ByLevel", {})
+            print(f"DEBUG: Event counts by level in summary: {levels}")
             output.append("Events by Severity Level:")
             for level, count in levels.items():
                 if count > 0:  # Only show non-zero counts
@@ -325,33 +313,16 @@ class LogProcessor:
         # Add aggregated events
         aggregated_events = processed_data.get("AggregatedEvents", {})
         if aggregated_events:
-            output.append("## SIGNIFICANT EVENTS")
+            output.append("## AGGREGATED EVENTS")
             
             # Process events by log type and severity
             for log_type, events in aggregated_events.items():
-                # First add critical and error events
-                critical_errors = [e for e in events if e.get("Level") in ["1", "2", "Critical", "Error"]]
-                if critical_errors:
-                    output.append(f"\n### {log_type} Critical/Error Events:")
-                    for event in critical_errors[:10]:  # Limit to 10 most important
+                # Include ALL aggregated events for this log type
+                if events: # Check if there are any events for this log type
+                    output.append(f"\n### {log_type} Events:")
+                    # Events are already sorted by frequency in _aggregate_events
+                    for event in events:
                         self._format_event(event, output)
-                
-                # Then add warning events
-                warnings = [e for e in events if e.get("Level") in ["3", "Warning"]]
-                if warnings:
-                    output.append(f"\n### {log_type} Warning Events:")
-                    for event in warnings[:5]:  # Limit to 5 warnings
-                        self._format_event(event, output)
-                
-                # Add a small selection of information events if there are errors/warnings
-                if critical_errors or warnings:
-                    info_events = [e for e in events if e.get("Level") in ["4", "5", "Information", "Verbose"]]
-                    if info_events:
-                        output.append(f"\n### {log_type} Information Events (selected):")
-                        # Prioritize frequent information events
-                        sorted_info = sorted(info_events, key=lambda x: x.get("OccurrenceCount", 0), reverse=True)
-                        for event in sorted_info[:3]:  # Just a few info events
-                            self._format_event(event, output)
         
         return "\n".join(output)
     
@@ -387,10 +358,8 @@ class LogProcessor:
         
         # Add timestamps (first few)
         if timestamps:
-            ts_str = ", ".join(timestamps[:3])
-            if len(timestamps) > 3 or additional > 0:
-                more_count = len(timestamps) - 3 + additional
-                ts_str += f" and {more_count} more occurrences"
+            # Join all available timestamps (up to 10 most recent from aggregation)
+            ts_str = ", ".join(timestamps)
             output_lines.append(f"When: {ts_str}")
         
         output_lines.append("")  # Empty line for spacing

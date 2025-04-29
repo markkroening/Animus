@@ -21,14 +21,18 @@ class EventLevel(Enum):
         if not level_str:
             return cls.UNKNOWN
 
+        # Ensure input is treated as string before calling .lower()
+        level_str = str(level_str).lower() # Convert to string and lower case
+
         level_map = {
-            "critical": cls.CRITICAL,
-            "error": cls.ERROR,
-            "warning": cls.WARNING,
-            "information": cls.INFORMATION,
-            "verbose": cls.VERBOSE,
+            # Map both text names and common numeric codes
+            "critical": cls.CRITICAL, "1": cls.CRITICAL,
+            "error": cls.ERROR,       "2": cls.ERROR,
+            "warning": cls.WARNING,     "3": cls.WARNING,
+            "information": cls.INFORMATION, "4": cls.INFORMATION, "info": cls.INFORMATION,
+            "verbose": cls.VERBOSE,     "5": cls.VERBOSE,
         }
-        return level_map.get(level_str.lower(), cls.UNKNOWN)
+        return level_map.get(level_str, cls.UNKNOWN) # Use level_str directly as it's already lowercase
 
 @dataclass
 class EventLogEntry:
@@ -58,7 +62,7 @@ class EventLogEntry:
         return cls(
             time_created=str(data.get('TimeCreated', '')),
             log_name=str(data.get('LogName', '')),
-            level=EventLevel.from_string(data.get('Level', '')),
+            level=EventLevel.from_string(data.get('EntryType', '')),
             event_id=safe_int(data.get('EventID')) or 0,
             provider_name=str(data.get('ProviderName', '')),
             message=str(data.get('Message', '')),
@@ -93,38 +97,30 @@ class SystemInfo:
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> 'SystemInfo':
-        """Create SystemInfo from a dictionary."""
-        os_info = data.get('OS', {})
-        comp_info = data.get('Computer', {})
-        proc_info = data.get('Processor', {})
-        disks_info = data.get('Disks', [])
-
-        # Helper for safe type conversion
-        def safe_int(value: Any) -> int:
-            try:
-                return int(value) if value is not None else 0
-            except (ValueError, TypeError):
-                return 0
-
+        """Create SystemInfo from a dictionary provided by collect_logs.ps1."""
+        # PowerShell script provides a flat dictionary
         return cls(
-            os_name=str(os_info.get('Caption', 'Unknown OS')),
-            os_version=str(os_info.get('Version', 'Unknown')),
-            os_build=str(os_info.get('BuildNumber', 'Unknown')),
-            architecture=str(os_info.get('OSArchitecture', 'Unknown')),
-            install_date=str(os_info.get('InstallDate', 'Unknown')),
-            last_boot_time=str(os_info.get('LastBootUpTime', 'Unknown')),
-            uptime=str(os_info.get('UpTime', 'Unknown')),
-            manufacturer=str(comp_info.get('Manufacturer', 'Unknown')),
-            model=str(comp_info.get('Model', 'Unknown')),
-            system_type=str(comp_info.get('SystemType', 'Unknown')),
-            processors=safe_int(comp_info.get('NumberOfProcessors')),
-            memory=str(comp_info.get('TotalPhysicalMemory', 'Unknown')),
-            computer_name=str(comp_info.get('Name', 'Unknown')),
-            processor_name=str(proc_info.get('Name', 'Unknown')),
-            cores=safe_int(proc_info.get('NumberOfCores')),
-            logical_processors=safe_int(proc_info.get('NumberOfLogicalProcessors')),
-            clock_speed=str(proc_info.get('MaxClockSpeedGHz', 'Unknown')),
-            disks=disks_info if isinstance(disks_info, list) else []
+            # Map keys from PowerShell script output
+            computer_name=str(data.get('ComputerName', 'Unknown')),
+            os_version=str(data.get('OSVersion', 'Unknown')),
+            last_boot_time=str(data.get('LastBootTime', 'Unknown')),
+            uptime=str(data.get('Uptime', 'Unknown')) + " hours", # Add units
+            
+            # Other fields not provided by the current script
+            os_name="Unknown",
+            os_build="Unknown",
+            architecture="Unknown",
+            install_date="Unknown",
+            manufacturer="Unknown",
+            model="Unknown",
+            system_type="Unknown",
+            processors=0,
+            memory="Unknown",
+            processor_name="Unknown",
+            cores=0,
+            logical_processors=0,
+            clock_speed="Unknown",
+            disks=[]
         )
 
 @dataclass

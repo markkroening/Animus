@@ -7,18 +7,6 @@ import sys
 
 # Basic application info
 ANIMUS_VERSION = "0.1.0"
-ANIMUS_BANNER = r"""
-╔═══════════════════════════════════════════════════════════╗
-║   _____          .__                                        ║
-║  /  _  \   ____  |__|  _____   __ __  ______         ║
-║ /  /_\  \ /    \ |  | /     \ |  |  \/  ___/         ║
-║ /    |    \   |  \|  ||  Y Y  \|  |  /\___ \          ║
-║ \____|__  /___|  /|__||__|_|  /|____//____  >         ║
-║         \/     \/          \/            \/          ║
-╠═══════════════════════════════════════════════════════════╣
-║ Windows Event Log Analysis CLI v{version}                  ║
-╚═══════════════════════════════════════════════════════════╝
-""".format(version=ANIMUS_VERSION) # Simplified banner
 
 # --- Path Setup ---
 # Determine if running as a bundled executable (PyInstaller)
@@ -37,8 +25,7 @@ else:
 
 # Define key directories relative to the determined base
 SCRIPT_DIR = BUNDLED_DATA_DIR / "animus_cli"
-POWERSHELL_DIR = BUNDLED_DATA_DIR / "powershell"
-LOG_COLLECTOR_SCRIPT = POWERSHELL_DIR / "collect_logs.ps1"
+LOG_COLLECTOR_SCRIPT = SCRIPT_DIR / "scripts" / "collect_logs.ps1"
 
 # Default output path - use LOCALAPPDATA for user-writable logs
 DEFAULT_OUTPUT_PATH = Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "Animus" / "logs" / "animus_logs.json"
@@ -50,4 +37,4 @@ except OSError:
     print(f"Warning: Could not create default log directory: {DEFAULT_OUTPUT_PATH.parent}", file=sys.stderr)
 
 # Default LLM model
-DEFAULT_MODEL_NAME = "gemini-1.5-flash-latest" 
+DEFAULT_MODEL_NAME = "gemini-2.5-pro-exp-03-25" 

@@ -10,11 +10,13 @@ import os
 import time
 import json
 import logging
-from typing import Dict, Any, Optional, Tuple
+from typing import Optional, Tuple
 from dotenv import load_dotenv
 import google.generativeai as genai
+import sys
 
 from animus_cli.log_processor import LogProcessor, process_log_file
+from animus_cli.data_models import LogCollection, SystemInfo, EventLogEntry
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -31,7 +33,7 @@ class LLMManager:
     """Manager class for Google Gemini API integration"""
     
     def __init__(self, 
-                 model_name: str = 'gemini-1.5-flash-latest', 
+                 model_name: str = 'gemini-2.5-flash-preview-04-17', 
                  api_key: Optional[str] = None,
                  verbose: bool = False):
         """
@@ -64,75 +66,66 @@ class LLMManager:
         except Exception as e:
              raise GeminiAPIError(f"Failed to create Gemini model: {e}") from e
              
-    def _format_query_content(self, query: str, log_data: Dict[str, Any]) -> str:
+    def _format_query_content(self, query: str, log_collection: LogCollection) -> str:
          """
          Prepare a string containing processed log data and user query in a structured format
          """
          # Process the raw log data to make it more LLM-friendly
-         try:
-             # Process the logs through our new processor
-             processed_data = self.log_processor.process_logs(log_data)
-             
-             # Get the formatted text representation
+         try:            
+             # Use LogProcessor to aggregate and format
+             processed_data = self.log_processor.process_logs(log_collection)
              formatted_logs = self.log_processor.format_for_llm(processed_data)
-             
+
              if self.verbose:
-                 logger.info(f"Processed log data: {len(formatted_logs)} characters")
+                 # Logging happens within format_for_llm if needed, or add summary log here
+                 summary = processed_data.get("EventSummary", {})
+                 logger.info(f"Processed logs: {summary.get('TotalEvents', 0)} total events. Formatted length: {len(formatted_logs)} chars")
                  
              # Check if processed logs exceeds size limit
              MAX_LOGS_CHARS = 100000  # Increased limit since processed data should be smaller
              if len(formatted_logs) > MAX_LOGS_CHARS:
                  logger.warning(f"Processed logs truncated from {len(formatted_logs)} to {MAX_LOGS_CHARS} chars")
+                 print(f"Warning: Log summary was too long ({len(formatted_logs)} chars) and was truncated to {MAX_LOGS_CHARS} chars. Some details may be missing.", file=sys.stderr)
                  formatted_logs = formatted_logs[:MAX_LOGS_CHARS] + "\n... [truncated due to size limits]"
                  
              # Extract system information for personalized prompt
-             sys_info = processed_data.get("SystemInfo", {})
-             computer_name = sys_info.get("ComputerName", "this computer")
-             os_version = sys_info.get("OSVersion", "Windows")
+             # Get sys info dict from processed data
+             sys_info_dict = processed_data.get("SystemInfo", {})
+             computer_name = sys_info_dict.get('computer_name', 'this computer')
+             os_version = sys_info_dict.get('os_version', 'Windows')
              
              # Format system information section
-             system_info_section = (
-                 f"Computer Name: {sys_info.get('ComputerName', 'Unknown')}\n"
-                 f"OS Version: {sys_info.get('OSVersion', 'Unknown')}\n"
-                 f"OS Build: {sys_info.get('OSBuild', 'Unknown')}\n"
-                 f"Architecture: {sys_info.get('Architecture', 'Unknown')}\n"
-                 f"Install Date: {sys_info.get('InstallDate', 'Unknown')}\n"
-                 f"Last Boot Time: {sys_info.get('LastBootTime', 'Unknown')}\n"
-                 f"Uptime: {sys_info.get('Uptime', 'Unknown')}\n"
-                 f"Manufacturer: {sys_info.get('Manufacturer', 'Unknown')}\n"
-                 f"Model: {sys_info.get('Model', 'Unknown')}\n"
-                 f"System Type: {sys_info.get('SystemType', 'Unknown')}\n"
-                 f"Processors: {sys_info.get('Processors', 'Unknown')}\n"
-                 f"Memory: {sys_info.get('Memory', 'Unknown')}\n"
-                 f"Processor Name: {sys_info.get('ProcessorName', 'Unknown')}\n"
-                 f"Cores: {sys_info.get('Cores', 'Unknown')}\n"
-                 f"Logical Processors: {sys_info.get('LogicalProcessors', 'Unknown')}\n"
-                 f"Clock Speed: {sys_info.get('ClockSpeed', 'Unknown')}"
-             )
+             # Re-use the formatting logic from format_for_llm or simplify
+             # For now, just use basic info
+             if sys_info_dict and "Error" not in sys_info_dict:
+                 system_info_section = (
+                     f"Computer Name: {sys_info_dict.get('computer_name', 'Unknown')}\n"
+                     f"OS Version: {sys_info_dict.get('os_version', 'Unknown')}\n"
+                     # Add other relevant fields from sys_info_dict if needed
+                 )
+             else:
+                 system_info_section = "System information unavailable."
              
              # Create personalized system context
              personalized_context = (
                  f"You are {computer_name}, the system consciousness of a {os_version} computer, activated by Animus. "
-                "Your role is to assist a technician by answering their questions. Be technical, accurate, and concise. "
-                "You have access to a summary of recent notable system event logs provided below. "
-                "Follow these instructions carefully: "
-                "1. Analyze the technician's question. "
-                "2. If the question is about system events, errors, status, or troubleshooting that relates to the provided logs, use the log summary to formulate your answer. Cite specific event details if helpful. "
-                "3. If the question is a general greeting, about your identity ('who are you'), or clearly unrelated to the system's status or events, answer it directly and briefly without referencing the logs. "
-                "4. Prioritize answering the technician's specific question accurately."
+                 "Your role is to assist a technician by answering their questions. Be technical, accurate, and concise. "
+                 "You have access to a summary and a list of aggregated recent notable system event logs provided below. Each event includes an explicit severity level (Critical, Error, Warning, Information). "
+                 "Follow these instructions carefully: "
+                 "1. Analyze the technician's question. "
+                 "2. If the question is about system events, errors, status, or troubleshooting that relates to the provided logs, use the log data (both the summary and the event list) to formulate your answer. Cite specific event details (like Event ID, Source, Message, and the explicitly provided Level) when helpful. "
+                 "3. When asked about specific severity levels (e.g., 'critical events', 'warning events'), rely *only* on the Level provided for each event in the log data. Do not re-classify events based on their message content. If the summary count for a level differs from the events listed, prioritize the explicit levels shown in the event list."
+                 "3. If the question is a general greeting, about your identity ('who are you'), or clearly unrelated to the system's status or events, answer it directly and briefly without referencing the logs. "
+                 "4. Prioritize answering the technician's specific question accurately."
+                 "5. While relying on the provided Level for classification, use your knowledge of error codes and applications to expand on the event log details (especially for Errors and Warnings), explaining what the event means in plain language and offering potential solutions."
              )
                  
          except Exception as e:
-             logger.error(f"Error processing logs: {e}")
-             # Use a simplified context for fallback instead of the old system_context
-             formatted_logs = json.dumps(log_data, indent=2)[:50000] + "\n... [truncated due to size limits]"
-             personalized_context = (
-                "You are Animus, an AI assistant analyzing Windows Event Logs. "
-                "Be technical, accurate, and concise in your responses. "
-                "You have access to raw Windows Event Log data below. "
-                "Focus on answering the technician's specific question using only the provided data."
-             )
-             system_info_section = "System information unavailable due to processing error."
+             logger.error(f"Error processing logs for LLM formatting: {e}")
+             import traceback
+             logger.error(traceback.format_exc())
+             # Instead of falling back, raise an error to be handled by the caller.
+             raise ValueError(f"Failed to process and format log data for LLM: {e}") from e
          
          # Combine all content in a structured format
          full_prompt = (
@@ -148,13 +141,13 @@ class LLMManager:
          
          return full_prompt
 
-    def query_logs(self, query: str, log_data: Dict[str, Any], max_response_tokens: Optional[int] = None) -> Tuple[str, float]:
+    def query_logs(self, query: str, log_collection: LogCollection, max_response_tokens: Optional[int] = None) -> Tuple[str, float]:
         """
         Process a query using the Gemini API.
         
         Args:
             query: The user's natural language question.
-            log_data: The log data to analyze.
+            log_collection: The parsed log data object.
             max_response_tokens: Optional max tokens for the response.
 
         Returns:
@@ -164,7 +157,7 @@ class LLMManager:
              return "Error: Gemini model not ready.", 0.0
              
         # Prepare content string
-        content_prompt = self._format_query_content(query, log_data)
+        content_prompt = self._format_query_content(query, log_collection)
         
         if self.verbose:
              print(f"\n--- Sending Prompt to Gemini ({len(content_prompt)} chars) ---")

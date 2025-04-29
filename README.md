@@ -20,12 +20,22 @@ Animus CLI is a powerful Windows Event Log analysis tool that uses AI to help te
 
 ## Installation
 
+### Standard Installation
 1. Download the latest installer from the releases page
 2. Run `AnimusSetup.exe`
 3. Create a `.env` file in the installation directory with your Gemini API key:
    ```
    GEMINI_API_KEY=your_api_key_here
    ```
+
+### Silent Installation
+For automated or unattended installations, you can use the following command-line switch:
+
+```batch
+AnimusSetup.exe /VERYSILENT
+```
+
+Note: A UAC prompt will still appear as this is required by Windows for security reasons.
 
 ## Usage
 

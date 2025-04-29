@@ -23,9 +23,11 @@ class LogParser:
             A LogCollection object or None if parsing fails.
         """
         try:
-            collection_info = data.get('CollectionInfo', {})
-            system_info_data = data.get('SystemInfo', {})
-            events_data = data.get('Events', {})
+            # Match the structure produced by collect_logs.ps1
+            collection_time = data.get('CollectionTime', 'Unknown') # Top-level
+            time_range = data.get('TimeRange', {})                # Top-level
+            system_info_data = data.get('SystemInfo', {})        # Top-level
+            logs_data = data.get('Logs', {})                    # Use 'Logs' key
 
             system_info = SystemInfo.from_dict(system_info_data)
 
@@ -35,17 +37,19 @@ class LogParser:
                 if isinstance(raw_events, list):
                     for event_dict in raw_events:
                         if isinstance(event_dict, dict):
-                            # Add basic check to skip clearly invalid entries
-                            if event_dict.get('TimeCreated') or event_dict.get('Message'):
+                            # Ensure we use the correct keys from PS output for EventLogEntry
+                            # Adjust EventLogEntry.from_dict if needed, but assuming it maps correctly for now
+                            # Check basic validity
+                            if event_dict.get('TimeGenerated') or event_dict.get('Message'):
                                 parsed.append(EventLogEntry.from_dict(event_dict))
                 return parsed
 
             return LogCollection(
-                collection_time=collection_info.get('CollectionTime', 'Unknown'),
-                time_range=collection_info.get('TimeRange', {}),
+                collection_time=collection_time,
+                time_range=time_range,
                 system_info=system_info,
-                system_events=parse_event_list(events_data.get('System', [])),
-                application_events=parse_event_list(events_data.get('Application', []))
+                system_events=parse_event_list(logs_data.get('System', [])),
+                application_events=parse_event_list(logs_data.get('Application', []))
             )
         except Exception as e:
             # Keep minimal error logging for critical parsing failures

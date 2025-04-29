@@ -41,8 +41,8 @@ if not exist "animus_cli\main.py" (
     exit /b 1
 )
 
-if not exist "powershell\collect_logs.ps1" (
-    echo Error: powershell\collect_logs.ps1 not found
+if not exist "animus_cli\scripts\collect_logs.ps1" (
+    echo Error: animus_cli\scripts\collect_logs.ps1 not found
     exit /b 1
 )
 
