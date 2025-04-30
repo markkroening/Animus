@@ -10,7 +10,7 @@ import os
 import time
 import json
 import logging
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Union, Dict, Any
 import google.generativeai as genai
 import sys
 
@@ -42,6 +42,12 @@ class LLMManager:
         self.model = None
         self.log_processor = LogProcessor(verbose=verbose)
         
+        # Set log level based on verbose flag
+        if verbose:
+            logger.setLevel(logging.DEBUG)
+        else:
+            logger.setLevel(logging.CRITICAL)  # Suppress all logging in non-verbose mode
+        
         # Get API key from system environment variable
         self.api_key = os.getenv("GEMINI_API_KEY")
         if not self.api_key:
@@ -70,8 +76,16 @@ class LLMManager:
          """
          # Process the raw log data to make it more LLM-friendly
          try:            
+             # Convert LogCollection to dictionary if needed
+             if hasattr(log_collection, 'to_dict'):
+                 log_data = log_collection.to_dict()
+             elif isinstance(log_collection, dict):
+                 log_data = log_collection
+             else:
+                 raise ValueError("log_collection must be a dictionary or have a to_dict method")
+                 
              # Use LogProcessor to aggregate and format
-             processed_data = self.log_processor.process_logs(log_collection)
+             processed_data = self.log_processor.process_logs(log_data)
              formatted_logs = self.log_processor.format_for_llm(processed_data)
 
              if self.verbose:
@@ -81,21 +95,24 @@ class LLMManager:
                  
              # Save formatted logs to a file alongside the JSON
              try:
-                 # Get the path of the current log file from the LogCollection
+                 # Get the path of the current log file from the LogCollection or use default path
                  if hasattr(log_collection, 'file_path') and log_collection.file_path:
                      base_path = str(log_collection.file_path)
-                     formatted_path = base_path.rsplit('.', 1)[0] + '_formatted.txt'
-                     with open(formatted_path, 'w', encoding='utf-8') as f:
-                         f.write(formatted_logs)
-                     if self.verbose:
-                         logger.info(f"Saved formatted logs to: {formatted_path}")
                  else:
-                     logger.warning("Could not save formatted logs: LogCollection has no file_path attribute")
+                     # Use default path in logs directory
+                     logs_dir = os.path.join(os.path.expanduser("~"), "AppData", "Local", "Animus", "logs")
+                     base_path = os.path.join(logs_dir, "animus_logs")
+                     
+                 formatted_path = base_path.rsplit('.', 1)[0] + '_formatted.txt'
+                 with open(formatted_path, 'w', encoding='utf-8') as f:
+                     f.write(formatted_logs)
+                 if self.verbose:
+                     logger.info(f"Saved formatted logs to: {formatted_path}")
              except Exception as e:
                  logger.warning(f"Failed to save formatted logs: {e}")
                  
              # Check if processed logs exceeds size limit
-             MAX_LOGS_CHARS = 100000  # Increased limit since processed data should be smaller
+             MAX_LOGS_CHARS = 100000
              if len(formatted_logs) > MAX_LOGS_CHARS:
                  logger.warning(f"Processed logs truncated from {len(formatted_logs)} to {MAX_LOGS_CHARS} chars")
                  print(f"Warning: Log summary was too long ({len(formatted_logs)} chars) and was truncated to {MAX_LOGS_CHARS} chars. Some details may be missing.", file=sys.stderr)
@@ -104,17 +121,21 @@ class LLMManager:
              # Extract system information for personalized prompt
              # Get sys info dict from processed data
              sys_info_dict = processed_data.get("SystemInfo", {})
-             computer_name = sys_info_dict.get('computer_name', 'this computer')
-             os_version = sys_info_dict.get('os_version', 'Windows')
+             computer_name = sys_info_dict.get('ComputerName', 'this computer')
+             os_version = sys_info_dict.get('OSVersion', 'Windows')
              
              # Format system information section
              # Re-use the formatting logic from format_for_llm or simplify
              # For now, just use basic info
              if sys_info_dict and "Error" not in sys_info_dict:
                  system_info_section = (
-                     f"Computer Name: {sys_info_dict.get('computer_name', 'Unknown')}\n"
-                     f"OS Version: {sys_info_dict.get('os_version', 'Unknown')}\n"
-                     # Add other relevant fields from sys_info_dict if needed
+                     f"Computer Name: {sys_info_dict.get('ComputerName', 'Unknown')}\n"
+                     f"OS Version: {sys_info_dict.get('OSVersion', 'Unknown')} {sys_info_dict.get('OSDisplayVersion', '')} (Build {sys_info_dict.get('OSBuildNumber', 'N/A')})\n"
+                     f"Model: {sys_info_dict.get('CsManufacturer', 'Unknown')} {sys_info_dict.get('CsModel', 'Unknown')}\n"
+                     f"Memory: {sys_info_dict.get('TotalPhysicalMemory', 'Unknown')}\n"
+                     f"Install Date: {sys_info_dict.get('InstallDate', 'Unknown')}\n"
+                     f"Last Boot: {sys_info_dict.get('LastBootTime', 'Unknown')}\n"
+                     f"Uptime Hours: {sys_info_dict.get('UptimeHours', 'Unknown')}"
                  )
              else:
                  system_info_section = "System information unavailable."
@@ -154,13 +175,13 @@ class LLMManager:
          
          return full_prompt
 
-    def query_logs(self, query: str, log_collection: LogCollection, max_response_tokens: Optional[int] = None) -> Tuple[str, float]:
+    def query_logs(self, query: str, log_collection: Union[Dict[str, Any], LogCollection], max_response_tokens: Optional[int] = None) -> Tuple[str, float]:
         """
         Process a query using the Gemini API.
         
         Args:
             query: The user's natural language question.
-            log_collection: The parsed log data object.
+            log_collection: The parsed log data object or dictionary.
             max_response_tokens: Optional max tokens for the response.
 
         Returns:

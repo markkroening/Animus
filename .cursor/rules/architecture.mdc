@@ -13,11 +13,10 @@ Animus CLI is a Windows-based command-line tool for local Windows Event Log anal
 ### 1. Entry Point (`animus_cli/main.py`)
 - **Purpose:** Main executable script and orchestrator.
 - **Responsibilities:**
-    - Parses command-line arguments (`argparse`).
     - Loads environment variables (`dotenv`).
     - Instantiates the `AnimusCLI` controller.
-    - Determines the execution flow (collect, load, query, interactive).
-    - Calls appropriate methods on the `AnimusCLI` instance.
+    - Always collects fresh logs on launch.
+    - Always starts in interactive mode with the LLM.
     - Handles top-level application exit codes.
 
 ### 2. Configuration (`animus_cli/config.py`)
@@ -76,26 +75,25 @@ Animus CLI is a Windows-based command-line tool for local Windows Event Log anal
 ## Data Flow
 
 1.  **Startup (`main.py`)**:
-    *   Parse CLI args.
     *   Instantiate `AnimusCLI`.
-2.  **Log Acquisition (if needed)**:
-    *   `main.py` calls `cli.collect_and_load_logs` or `cli.load_logs`.
+    *   Always collect fresh logs.
+2.  **Log Acquisition**:
+    *   `main.py` calls `cli.collect_and_load_logs`.
     *   `cli.collect_and_load_logs` calls `collector.collect_logs`.
     *   `collector.collect_logs` executes `powershell/collect_logs.ps1`.
     *   PowerShell script writes `animus_logs.json`.
     *   `cli.load_logs` calls `parser.LogParser.parse_file`.
     *   `LogParser` reads JSON, uses `data_models` to create a `LogCollection` object, stored in `cli.log_collection`.
-3.  **Query Processing (`main.py` -> `cli.py`)**:
-    *   If single query or interactive mode: `cli.process_query(user_query)` is called.
+3.  **Interactive Mode (`main.py` -> `cli.py`)**:
+    *   Always starts in interactive mode with the LLM.
+    *   `cli.run_interactive_mode` displays banner and status.
+    *   Enters a loop, reading user input.
+    *   Handles basic commands (`exit`, `status`, `help`) or calls `cli.process_query` for analysis requests.
     *   `cli.process_query` ensures LLM is initialized (`_ensure_llm`).
     *   Reads raw JSON data from the log file.
     *   Calls `llm_manager.query_logs` with the query and raw data.
     *   `llm_manager` interacts with the Gemini API.
     *   Response is printed to the console.
-4.  **Interactive Mode (`cli.run_interactive_mode`)**:
-    *   Displays banner and status (`cli.show_status`).
-    *   Enters a loop, reading user input.
-    *   Handles basic commands (`exit`, `status`, `help`) or calls `cli.process_query` for analysis requests.
 
 ## File Structure (Refactored)
 ```
@@ -112,7 +110,7 @@ animus_cli/
 powershell/
 └── collect_logs.ps1  # Log collection script
 
-.env                  # Optional: For storing GEMINI_API_KEY
+set_api_key.bat       # Script for setting the Gemini API key
 # Other files (e.g., requirements.txt, README.md, build scripts)
 ```
 
@@ -149,9 +147,8 @@ from animus_cli.cli import AnimusCLI
 ### Execution Methods
 The application can be executed in several ways:
 1. **Direct Python Execution:** `python -m animus_cli.main`
-2. **Batch File Execution:** `animus_direct.bat` (runs the Python module)
-3. **Executable Execution:** `animus.bat` (runs the PyInstaller-generated executable)
-4. **Installer Execution:** `AnimusSetup.exe` (installs and runs the application)
+2. **Batch File Execution:** `animus.bat` (runs the PyInstaller-generated executable)
+3. **Installer Execution:** `AnimusSetup.exe` (installs and runs the application)
 
 ## Deployment
 - Uses a two-stage distribution pipeline with PyInstaller and Inno Setup
@@ -160,7 +157,12 @@ The application can be executed in several ways:
 - The modular structure is preserved in the packaged application
 
 ## Security Considerations
-- Unchanged from previous description. Focus remains on local execution and secure API key handling (via `.env` or environment variables). Elevation is requested only when necessary for log collection.
+- Focus remains on local execution and secure API key handling.
+- API key management is handled through the `set_api_key.bat` script, which:
+  - Prompts the user for their Gemini API key
+  - Creates a `.env` file in the application directory
+  - Sets the `GEMINI_API_KEY` environment variable
+- Elevation is requested only when necessary for log collection.
 
 ## Error Handling
 - Simplified as per refactoring request. Basic error messages are printed to `stderr` for critical issues like file not found, JSON parsing errors, LLM initialization failures, or PowerShell script execution problems. Less verbose than the original.

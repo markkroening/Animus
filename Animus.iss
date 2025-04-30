@@ -36,14 +36,11 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
 
 [Files]
-; Copy Python source code (excluding scripts dir)
-Source: "animus_cli\*"; DestDir: "{app}\animus_cli"; Excludes: "scripts"; Flags: ignoreversion recursesubdirs createallsubdirs
-; Copy PowerShell script to expected location
-Source: "animus_cli\scripts\collect_logs.ps1"; DestDir: "{app}\scripts"; Flags: ignoreversion
+; Copy entire animus_cli directory with its structure intact
+Source: "animus_cli\*"; DestDir: "{app}\animus_cli"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "animus.bat"; DestDir: "{app}"; Flags: ignoreversion
 Source: "requirements.txt"; DestDir: "{app}"; Flags: ignoreversion
 Source: "README.md"; DestDir: "{app}"; Flags: ignoreversion
-Source: ".env"; DestDir: "{app}"; Flags: ignoreversion
 ; Exclude set_api_key.bat from installer
 
 [Icons]

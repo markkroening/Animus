@@ -190,4 +190,40 @@ class LogCollection:
             },
             "error_count": counts["errors"],
             "warning_count": counts["warnings"],
+        }
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert the LogCollection to a dictionary format compatible with LogProcessor."""
+        # Convert all events to dictionaries
+        all_events = [
+            {
+                "LogName": event.log_name,
+                "TimeCreated": event.time_created,
+                "Level": event.level.name,
+                "ProviderName": event.provider_name,
+                "EventID": event.event_id,
+                "Message": event.message
+            }
+            for event in self.all_events
+        ]
+
+        # Convert system info to dictionary
+        sys_info = {
+            "ComputerName": self.system_info.computer_name,
+            "OSVersion": self.system_info.os_version,
+            "OSDisplayVersion": self.system_info.os_display_version,
+            "OSBuildNumber": self.system_info.os_build_number,
+            "CsModel": self.system_info.model,
+            "CsManufacturer": self.system_info.manufacturer,
+            "TotalPhysicalMemory": self.system_info.total_physical_memory,
+            "InstallDate": self.system_info.install_date,
+            "LastBootTime": self.system_info.last_boot_time,
+            "UptimeHours": self.system_info.uptime_hours
+        }
+
+        return {
+            "CollectionTime": self.collection_time,
+            "TimeRange": self.time_range,
+            "SystemInfo": sys_info,
+            "Events": all_events
         } 

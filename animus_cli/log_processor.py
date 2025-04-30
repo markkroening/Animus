@@ -1,7 +1,10 @@
 import json
+import logging
 from collections import defaultdict
 from datetime import datetime, timezone
 from typing import Dict, List, Any, Optional, Tuple
+import os
+import sys
 
 """
 Log Processor for Animus CLI (Refactored)
@@ -18,6 +21,9 @@ Changes from previous version:
  (e.g., has 'Events' key with a flat list of all event dicts).
 """
 
+# Configure module logger
+logger = logging.getLogger(__name__)
+
 class LogProcessor:
     """Processes raw log dictionaries to make them more efficient for LLM consumption."""
 
@@ -30,7 +36,7 @@ class LogProcessor:
         """
         self.verbose = verbose
         if self.verbose:
-            print("[INFO] LogProcessor initialized.")
+            logger.info("LogProcessor initialized.")
 
     def process_logs(self, log_data: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -46,7 +52,7 @@ class LogProcessor:
             raise ValueError("Input log_data must be a non-empty dictionary.")
 
         if self.verbose:
-            print(f"[INFO] Processing log data collected at: {log_data.get('CollectionTime', 'Unknown')}")
+            logger.info(f"Processing log data collected at: {log_data.get('CollectionTime', 'Unknown')}")
 
         # Extract raw events list
         # Assumes refactored PowerShell script outputs a flat list under 'Events' key
@@ -71,7 +77,7 @@ class LogProcessor:
         if self.verbose:
             total_raw = len(raw_events)
             total_agg = len(processed_data.get("AggregatedEvents", []))
-            print(f"[INFO] Aggregated {total_raw} raw events into {total_agg} distinct event groups.")
+            logger.info(f"Aggregated {total_raw} raw events into {total_agg} distinct event groups.")
 
         return processed_data
 
@@ -127,7 +133,7 @@ class LogProcessor:
                     except (ValueError, AttributeError) as e:
                          # Handle cases where timestamp format might be unexpected
                          if self.verbose:
-                             print(f"[WARN] Could not parse timestamp: {ts_str} for EventID {template_event.get('EventID')}. Error: {e}")
+                             logger.warning(f"Could not parse timestamp: {ts_str} for EventID {template_event.get('EventID')}. Error: {e}")
                          # Optionally add a placeholder or skip
             
             timestamps.sort() # Sort ascending (oldest first)
@@ -341,6 +347,30 @@ class LogProcessor:
 
         return "\n".join(output_lines)
 
+    def _clean_text(self, text: str) -> str:
+        """
+        Clean up special characters and formatting in text.
+        
+        Args:
+            text: Text to clean.
+            
+        Returns:
+            Cleaned text with special characters removed.
+        """
+        if not text:
+            return text
+            
+        # Remove special characters that appear in timestamps
+        text = text.replace('â€Ž', '')  # Remove zero-width space
+        text = text.replace('â€', '')   # Remove other special characters
+        text = text.replace('€', '')    # Remove euro symbol
+        text = text.replace('Ž', '')    # Remove Z with caron
+        
+        # Clean up any remaining whitespace
+        text = ' '.join(text.split())
+        
+        return text
+
     def _format_event(self, event: Dict[str, Any], output_lines: List[str]):
         """
         Format a single aggregated event dictionary for concise text output.
@@ -357,6 +387,12 @@ class LogProcessor:
         first_ts = event.get("FirstTimestamp")
         last_ts = event.get("LastTimestamp")
         example_ts_list = event.get("ExampleTimestamps", [])
+
+        # Clean up message and timestamps
+        message = self._clean_text(message)
+        first_ts = self._clean_text(first_ts) if first_ts else None
+        last_ts = self._clean_text(last_ts) if last_ts else None
+        example_ts_list = [self._clean_text(ts) for ts in example_ts_list] if example_ts_list else []
 
         # Format message: replace newlines, trim whitespace
         if message is not None:  # Only process if message is not None
@@ -394,24 +430,82 @@ def process_log_file(input_file: str, output_file: Optional[str] = None, verbose
         Tuple of (formatted text string for LLM, processed data dictionary).
     """
     if verbose:
-        print(f"[INFO] Loading log file: {input_file}")
+        logger.info(f"Loading log file: {input_file}")
     try:
-        # Try UTF-8 first, then UTF-8-SIG (handles PowerShell BOM)
+        # Check if file exists and is not empty
+        if not os.path.exists(input_file):
+            logger.debug(f"Log file does not exist: {input_file}")
+            raise FileNotFoundError(f"Input log file not found: {input_file}")
+        
+        file_size = os.path.getsize(input_file)
+        logger.debug(f"Log file size: {file_size} bytes")
+        
+        if file_size == 0:
+            logger.debug(f"Log file is empty: {input_file}")
+            raise ValueError(f"Input log file is empty: {input_file}")
+
+        # Read the file in binary mode first
+        with open(input_file, 'rb') as f:
+            raw_data = f.read()
+            logger.debug(f"Read {len(raw_data)} bytes from file")
+            logger.debug(f"First 100 bytes: {raw_data[:100]}")
+            
+            # Try to detect encoding
+            if raw_data.startswith(b'\xef\xbb\xbf'):  # UTF-8 BOM
+                logger.debug("Detected UTF-8 BOM")
+                content = raw_data[3:].decode('utf-8')
+            elif raw_data.startswith(b'\xff\xfe') or raw_data.startswith(b'\xfe\xff'):  # UTF-16 BOM
+                logger.debug("Detected UTF-16 BOM")
+                content = raw_data[2:].decode('utf-16')
+            else:
+                # Try UTF-8 first
+                try:
+                    content = raw_data.decode('utf-8')
+                    logger.debug("Successfully decoded as UTF-8")
+                except UnicodeDecodeError:
+                    # Fall back to system default encoding
+                    logger.debug("UTF-8 decode failed, trying system default encoding")
+                    content = raw_data.decode(sys.getdefaultencoding(), errors='ignore')
+
+        logger.debug(f"Decoded content length: {len(content)} characters")
+        logger.debug(f"First 200 characters of content: {content[:200]}")
+        
+        # Check if content is empty or just whitespace
+        if not content.strip():
+            logger.error("File content is empty or only whitespace")
+            raise ValueError("File content is empty or only whitespace")
+
+        # Now load JSON from the decoded string
+        logger.debug("Attempting to parse JSON content...")
         try:
-            with open(input_file, 'r', encoding='utf-8') as f:
-                log_data = json.load(f)
-        except UnicodeDecodeError:
-            if verbose:
-                 print("[INFO] UTF-8 decode failed, trying utf-8-sig...")
-            with open(input_file, 'r', encoding='utf-8-sig') as f:
-                log_data = json.load(f)
+            log_data = json.loads(content)
+            logger.debug("Successfully parsed JSON content")
         except json.JSONDecodeError as e:
-             raise RuntimeError(f"Failed to decode JSON from log file: {e}")
+            logger.error(f"JSON decode error: {str(e)}")
+            logger.error(f"Error position: line {e.lineno}, column {e.colno}")
+            logger.error(f"Error context: {e.doc[max(0, e.pos-50):e.pos+50] if e.doc else 'No context available'}")
+            raise
+
+        # Validate the log data structure
+        if not isinstance(log_data, dict):
+            raise ValueError("Log data is not a dictionary")
+        
+        if 'Events' not in log_data:
+            logger.warning("No 'Events' key found in log data")
+            log_data['Events'] = []
+        
+        if not isinstance(log_data['Events'], list):
+            raise ValueError("'Events' key is not a list")
+        
+        logger.debug(f"Found {len(log_data['Events'])} events in log data")
 
     except FileNotFoundError:
-         raise FileNotFoundError(f"Input log file not found: {input_file}")
+        raise FileNotFoundError(f"Input log file not found: {input_file}")
     except Exception as e:
-        raise RuntimeError(f"Failed to load log file '{input_file}': {e}")
+        logger.debug("Unexpected error during file processing:")
+        logger.debug(f"  - Error type: {type(e).__name__}")
+        logger.debug(f"  - Error message: {str(e)}")
+        raise RuntimeError(f"Failed to load and process log file '{input_file}': {e}")
 
     # Process the loaded data
     processor = LogProcessor(verbose=verbose)
@@ -419,44 +513,14 @@ def process_log_file(input_file: str, output_file: Optional[str] = None, verbose
 
     # Format for LLM
     if verbose:
-        print("[INFO] Formatting processed data for LLM...")
+        logger.info("Formatting processed data for LLM...")
     formatted_text = processor.format_for_llm(processed_data)
-
-    # Save processed data and formatted text if output file requested
-    if output_file:
-        if verbose:
-             print(f"[INFO] Saving processed outputs (JSON and TXT) to base path: {output_file}")
-        try:
-            # Ensure output directory exists
-            output_dir = os.path.dirname(output_file)
-            if output_dir:
-                 os.makedirs(output_dir, exist_ok=True)
-
-            # Save processed data dictionary as JSON
-            with open(output_file, 'w', encoding='utf-8') as f:
-                json.dump(processed_data, f, indent=2, ensure_ascii=False)
-            if verbose:
-                print(f"[SUCCESS] Saved processed JSON data to: {output_file}")
-
-            # Save formatted text to a corresponding .txt file
-            formatted_output_path = os.path.splitext(output_file)[0] + '_formatted.txt'
-            with open(formatted_output_path, 'w', encoding='utf-8') as f:
-                f.write(formatted_text)
-            if verbose:
-                print(f"[SUCCESS] Saved formatted text to: {formatted_output_path}")
-
-        except Exception as e:
-            # Log warning but don't fail the whole process if saving fails
-            print(f"[WARN] Failed to save output file(s) based on '{output_file}': {e}")
 
     return formatted_text, processed_data
 
 
 # --- Main execution block for testing ---
 if __name__ == "__main__":
-    import sys
-    import os
-
     if len(sys.argv) < 2:
         print(f"Usage: python {os.path.basename(__file__)} <input_json_file> [output_json_file]")
         sys.exit(1)
@@ -465,28 +529,28 @@ if __name__ == "__main__":
     output_path = sys.argv[2] if len(sys.argv) > 2 else None
 
     try:
-        print(f"Processing {input_path}...")
+        logger.info(f"Processing {input_path}...")
         # Set verbose=True for detailed output during processing
         formatted_llm_text, final_processed_data = process_log_file(input_path, output_path, verbose=True)
-        print("\n" + "="*80)
-        print("Processing Complete.")
-        print(f"Formatted text length for LLM: {len(formatted_llm_text)} characters")
+        logger.info("\n" + "="*80)
+        logger.info("Processing Complete.")
+        logger.info(f"Formatted text length for LLM: {len(formatted_llm_text)} characters")
         if output_path:
-             print(f"Processed JSON saved to: {output_path}")
-             print(f"Formatted text saved to: {os.path.splitext(output_path)[0] + '_formatted.txt'}")
-        print("="*80)
-        print("\nFormatted Text Sample (first 1500 chars):")
-        print("-" * 80)
-        print(formatted_llm_text[:1500])
+             logger.info(f"Processed JSON saved to: {output_path}")
+             logger.info(f"Formatted text saved to: {os.path.splitext(output_path)[0] + '_formatted.txt'}")
+        logger.info("="*80)
+        logger.info("\nFormatted Text Sample (first 1500 chars):")
+        logger.info("-" * 80)
+        logger.info(formatted_llm_text[:1500])
         if len(formatted_llm_text) > 1500:
-            print("...")
-        print("-" * 80)
+            logger.info("...")
+        logger.info("-" * 80)
 
     except FileNotFoundError as e:
-         print(f"\n[ERROR] Input file not found: {e}")
+         logger.error(f"\n[ERROR] Input file not found: {e}")
          sys.exit(1)
     except Exception as e:
-        print(f"\n[ERROR] An error occurred during processing: {e}")
+        logger.error(f"\n[ERROR] An error occurred during processing: {e}")
         import traceback
         traceback.print_exc() # Print full traceback for debugging
         sys.exit(1)

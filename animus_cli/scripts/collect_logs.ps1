@@ -58,9 +58,10 @@ try {
     $networkInfo = @{ Adapters = $networkAdaptersInfo }
 
     # --- Event Log Collection ---
-    Write-Verbose "Collecting event logs (System, Application, Security)..."
+    Write-Verbose "Collecting event logs (System, Application)..."
     $allEvents = @()
-    $logNames = 'System', 'Application', 'Security'
+    $logNames = 'System', 'Application'
+    $totalEvents = 0
     
     foreach ($logName in $logNames) {
         Write-Verbose "Processing '$logName' log..."
@@ -79,14 +80,18 @@ try {
                                                     @{N='EventID'; E={$_.Id}},
                                                     Message
             
+            $eventCount = $formattedEvents.Count
+            $totalEvents += $eventCount
             $allEvents += $formattedEvents
-            Write-Verbose "Collected $($formattedEvents.Count) events from '$logName'."
+            Write-Verbose "Collected $eventCount events from '$logName'."
 
         } catch {
             Write-Warning "Could not retrieve events from '$logName' log. Error: $($_.Exception.Message)"
             # Continue to next log even if one fails
         }
     }
+    
+    Write-Verbose "Total events collected: $totalEvents"
     
     # --- Compile Final Output ---
     Write-Verbose "Compiling final output..."
@@ -105,9 +110,36 @@ try {
     Write-Verbose "Exporting data to JSON file: $OutputPath"
     # Use Out-File for potentially large files, ensure parent directory exists
     $null = New-Item -ItemType Directory -Path (Split-Path $OutputPath -Parent) -Force
-    $outputData | ConvertTo-Json -Depth 5 -Compress | Out-File -FilePath $OutputPath -Encoding UTF8
+
+    # Convert to JSON with proper formatting and no extra whitespace
+    $jsonContent = $outputData | ConvertTo-Json -Depth 5 -Compress
+    Write-Verbose "JSON content length: $($jsonContent.Length) characters"
+    Write-Verbose "First 200 characters of JSON: $($jsonContent.Substring(0, [Math]::Min(200, $jsonContent.Length)))"
+
+    # Write to file with UTF-8 encoding (no BOM)
+    try {
+        # Use [System.IO.File]::WriteAllText for direct file writing with UTF-8 (no BOM)
+        [System.IO.File]::WriteAllText($OutputPath, $jsonContent, [System.Text.UTF8Encoding]::new($false))
+        Write-Verbose "Successfully wrote to file"
+        
+        # Verify the file was written
+        if (Test-Path $OutputPath) {
+            $fileSize = (Get-Item $OutputPath).Length
+            Write-Verbose "File exists with size: $fileSize bytes"
+            
+            # Read back the first few bytes to verify content
+            $firstBytes = Get-Content -Path $OutputPath -TotalCount 1 -Encoding Byte
+            Write-Verbose "First bytes of file: $($firstBytes -join ', ')"
+        } else {
+            Write-Error "File was not created at $OutputPath"
+            exit 1
+        }
+    } catch {
+        Write-Error "Failed to write to file: $($_.Exception.Message)"
+        exit 1
+    }
     
-    Write-Verbose "Script completed successfully. Collected $($allEvents.Count) total events."
+    Write-Verbose "Script completed successfully. Collected $totalEvents total events."
     exit 0
 
 } catch {

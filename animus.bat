@@ -2,8 +2,9 @@
 setlocal enabledelayedexpansion
 
 :: Parse command line arguments
-set "SILENT_MODE=0"
-set "INTERACTIVE_MODE=1"
+set "SILENT_MODE=1"
+set "INTERACTIVE_MODE=0"
+set "VERBOSE_MODE=0"
 
 :parse_args
 if "%~1"=="" goto :args_done
@@ -13,6 +14,8 @@ if /i "%~1"=="--silent" (
 ) else if /i "%~1"=="--interactive" (
     set "SILENT_MODE=0"
     set "INTERACTIVE_MODE=1"
+) else if /i "%~1"=="--verbose" (
+    set "VERBOSE_MODE=1"
 )
 shift
 goto :parse_args
@@ -23,6 +26,9 @@ set "SCRIPT_DIR=%~dp0"
 set "ANIMUS_EXE=%SCRIPT_DIR%animus_cli\main.py"
 set "LOG_DIR=%LOCALAPPDATA%\Animus\logs"
 set "LOG_FILE=%LOG_DIR%\animus_logs.json"
+
+:: Set Python path
+set "PYTHONPATH=%SCRIPT_DIR%;%PYTHONPATH%"
 
 :: Check if Python is installed
 where python >nul 2>nul
@@ -48,16 +54,19 @@ if not exist "%ANIMUS_EXE%" (
 :: Ensure logs directory exists
 if not exist "%LOG_DIR%" mkdir "%LOG_DIR%"
 
-:: Add the installation directory to PYTHONPATH
-set "PYTHONPATH=%SCRIPT_DIR%;%PYTHONPATH%"
-
-:: The Python script (main.py) will now handle log collection
-
-:: Run Animus with appropriate mode
+:: Run Animus with appropriate mode and logging
 if %INTERACTIVE_MODE%==1 (
-    python "%ANIMUS_EXE%" --output "%LOG_FILE%" --interactive
+    if %VERBOSE_MODE%==1 (
+        python "%ANIMUS_EXE%" --output "%LOG_FILE%" --interactive --verbose
+    ) else (
+        python "%ANIMUS_EXE%" --output "%LOG_FILE%" --interactive
+    )
 ) else (
-    python "%ANIMUS_EXE%" --output "%LOG_FILE%" --silent
+    if %VERBOSE_MODE%==1 (
+        python "%ANIMUS_EXE%" --output "%LOG_FILE%" --silent --verbose
+    ) else (
+        python "%ANIMUS_EXE%" --output "%LOG_FILE%" --silent
+    )
 )
 
 endlocal
