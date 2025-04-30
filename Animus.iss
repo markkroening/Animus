@@ -43,10 +43,8 @@ Source: "animus_cli\scripts\collect_logs.ps1"; DestDir: "{app}\scripts"; Flags: 
 Source: "animus.bat"; DestDir: "{app}"; Flags: ignoreversion
 Source: "requirements.txt"; DestDir: "{app}"; Flags: ignoreversion
 Source: "README.md"; DestDir: "{app}"; Flags: ignoreversion
-
-; Create logs directory
-[Dirs]
-Name: "{app}\logs"; Permissions: users-modify
+Source: ".env"; DestDir: "{app}"; Flags: ignoreversion
+; Exclude set_api_key.bat from installer
 
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
@@ -55,6 +53,9 @@ Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: de
 [Registry]
 ; Add installation directory to PATH
 Root: HKLM; Subkey: "SYSTEM\CurrentControlSet\Control\Session Manager\Environment"; ValueType: expandsz; ValueName: "Path"; ValueData: "{olddata};{app}"; Check: NeedsAddPath(ExpandConstant('{app}'))
+
+[UninstallDelete]
+Type: filesandordirs; Name: "{localappdata}\Animus"
 
 [Code]
 function NeedsAddPath(Param: string): boolean;
@@ -74,7 +75,4 @@ end;
 [Run]
 ; Install Python dependencies
 Filename: "powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -Command ""& {{pip install -r '{app}\requirements.txt'}}"""; Flags: runhidden; StatusMsg: "Installing Python dependencies..."
-Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#StringChange(MyAppName, '&', '&&')}}"; Flags: nowait postinstall skipifsilent
-
-[UninstallDelete]
-Type: filesandordirs; Name: "{app}\logs" 
+Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#StringChange(MyAppName, '&', '&&')}}"; Flags: nowait postinstall skipifsilent 

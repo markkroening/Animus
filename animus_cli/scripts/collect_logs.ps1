@@ -6,65 +6,114 @@ param(
     [int]$HoursBack = 48,
     
     [Parameter(Mandatory=$false)]
-    [int]$MaxEvents = 500
+    [int]$MaxEventsPerLog = 500
 )
 
-# Suppress all output
-$ProgressPreference = 'SilentlyContinue'
-$VerbosePreference = 'SilentlyContinue'
-$InformationPreference = 'SilentlyContinue'
-$WarningPreference = 'SilentlyContinue'
-$DebugPreference = 'SilentlyContinue'
-$ErrorActionPreference = 'SilentlyContinue'
-
-# Redirect all output streams to null
-$null = $PSDefaultParameterValues['*:Verbose'] = $false
-$null = $PSDefaultParameterValues['*:Debug'] = $false
-$null = $PSDefaultParameterValues['*:Information'] = $false
-$null = $PSDefaultParameterValues['*:Warning'] = $false
-$null = $PSDefaultParameterValues['*:ErrorAction'] = 'SilentlyContinue'
+# --- Script Start ---
+Write-Verbose "Starting log collection script..."
 
 try {
     # Calculate start time
     $startTime = (Get-Date).AddHours(-$HoursBack)
-    
-    # Get system metadata silently
-    $osInfo = Get-WmiObject Win32_OperatingSystem -ErrorAction SilentlyContinue
-    $lastBootTime = [System.Management.ManagementDateTimeConverter]::ToDateTime($osInfo.LastBootUpTime)
     $currentTime = Get-Date
-    $uptimeHours = [math]::Round(($currentTime - $lastBootTime).TotalHours)
+    Write-Verbose "Collecting events generated after: $($startTime.ToString('o'))"
     
+    # --- System Information ---
+    Write-Verbose "Gathering system information..."
+    $compInfo = Get-ComputerInfo -ErrorAction SilentlyContinue
+    $osInfo = Get-CimInstance Win32_OperatingSystem -ErrorAction SilentlyContinue
+
     $systemInfo = @{
         ComputerName = $env:COMPUTERNAME
-        OSVersion = $osInfo.Caption
-        LastBootTime = $lastBootTime.ToString("o")
-        Uptime = $uptimeHours
+        OSVersion = $compInfo.OsName
+        OSDisplayVersion = $compInfo.OsDisplayVersion
+        OSBuildNumber = $compInfo.OsBuildNumber
+        CsModel = $compInfo.CsModel
+        CsManufacturer = $compInfo.CsManufacturer
+        TotalPhysicalMemory = "$([math]::Round($compInfo.CsTotalPhysicalMemory / 1GB)) GB"
+        InstallDate = if ($osInfo.InstallDate) { $osInfo.InstallDate.ToString("o") } else { $null }
+        LastBootTime = if ($osInfo.LastBootUpTime) { $osInfo.LastBootUpTime.ToString("o") } else { $null }
+        UptimeHours = if ($osInfo.LastBootUpTime) { [math]::Round(($currentTime - $osInfo.LastBootUpTime).TotalHours) } else { $null }
     }
     
-    # Collect System and Application logs silently
-    $logs = @{
-        System = Get-EventLog -LogName System -After $startTime -Newest $MaxEvents -ErrorAction SilentlyContinue |
-            Select-Object TimeGenerated, EntryType, Source, EventID, Message
-        Application = Get-EventLog -LogName Application -After $startTime -Newest $MaxEvents -ErrorAction SilentlyContinue |
-            Select-Object TimeGenerated, EntryType, Source, EventID, Message
+    # --- Network Information ---
+    Write-Verbose "Gathering network information..."
+    $networkAdaptersInfo = @()
+    $activeIpConfigs = Get-NetIPConfiguration -ErrorAction SilentlyContinue | Where-Object { $_.NetAdapter.Status -eq 'Up' -and $_.IPv4Address.IPAddress -ne $null }
+    
+    foreach ($ipConfig in $activeIpConfigs) {
+        $adapter = $ipConfig.NetAdapter
+        $adapterInfo = @{
+            Name = $adapter.Name
+            Description = $adapter.InterfaceDescription
+            MACAddress = $adapter.MacAddress
+            Status = $adapter.Status
+            IPv4Address = ($ipConfig.IPv4Address | Select-Object -ExpandProperty IPAddress -First 1)
+            IPv6Address = ($ipConfig.IPv6Address | Select-Object -ExpandProperty IPAddress -First 1)
+            DNSServers = ($ipConfig.DNSServer.ServerAddresses | Where-Object { $_ -match '^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$' })
+            Gateway = ($ipConfig.IPv4DefaultGateway | Select-Object -ExpandProperty NextHop -First 1)
+        }
+        $networkAdaptersInfo += $adapterInfo
+    }
+    $networkInfo = @{ Adapters = $networkAdaptersInfo }
+
+    # --- Event Log Collection ---
+    Write-Verbose "Collecting event logs (System, Application, Security)..."
+    $allEvents = @()
+    $logNames = 'System', 'Application', 'Security'
+    
+    foreach ($logName in $logNames) {
+        Write-Verbose "Processing '$logName' log..."
+        try {
+            # Use Get-WinEvent -FilterHashtable for better performance and filtering
+            $events = Get-WinEvent -FilterHashtable @{
+                LogName = $logName
+                StartTime = $startTime
+            } -MaxEvents $MaxEventsPerLog -ErrorAction Stop
+
+            # Select and format desired properties
+            $formattedEvents = $events | Select-Object @{N='LogName'; E={$_.LogName}},
+                                                    @{N='TimeCreated'; E={$_.TimeCreated.ToUniversalTime().ToString("o")}},
+                                                    @{N='Level'; E={$_.LevelDisplayName}},
+                                                    @{N='ProviderName'; E={$_.ProviderName}},
+                                                    @{N='EventID'; E={$_.Id}},
+                                                    Message
+            
+            $allEvents += $formattedEvents
+            Write-Verbose "Collected $($formattedEvents.Count) events from '$logName'."
+
+        } catch {
+            Write-Warning "Could not retrieve events from '$logName' log. Error: $($_.Exception.Message)"
+            # Continue to next log even if one fails
+        }
     }
     
-    # Compile data
-    $output = @{
-        CollectionTime = $currentTime.ToString("yyyy-MM-dd HH:mm:ss")
+    # --- Compile Final Output ---
+    Write-Verbose "Compiling final output..."
+    $outputData = @{
+        CollectionTime = $currentTime.ToString("o")
         TimeRange = @{
             StartTime = $startTime.ToString("o")
             EndTime = $currentTime.ToString("o")
         }
         SystemInfo = $systemInfo
-        Logs = $logs
+        NetworkInfo = $networkInfo
+        Events = $allEvents
     }
     
-    # Export to JSON silently
-    $output | ConvertTo-Json -Depth 10 | Set-Content -Path $OutputPath -Encoding UTF8 -NoNewline
+    # --- Export to JSON ---
+    Write-Verbose "Exporting data to JSON file: $OutputPath"
+    # Use Out-File for potentially large files, ensure parent directory exists
+    $null = New-Item -ItemType Directory -Path (Split-Path $OutputPath -Parent) -Force
+    $outputData | ConvertTo-Json -Depth 5 -Compress | Out-File -FilePath $OutputPath -Encoding UTF8
     
+    Write-Verbose "Script completed successfully. Collected $($allEvents.Count) total events."
     exit 0
+
 } catch {
-    Write-Error $_.Exception.Message -ErrorAction SilentlyContinue
-    exit 1
-} 
+    # Log the specific error that caused the script to fail
+    $errorMessage = "Script failed with error: $($_.Exception.Message) at line $($_.InvocationInfo.ScriptLineNumber)"
+    Write-Error $errorMessage 
+    # Optionally write to a log file or event log here
+    exit 1 # Exit with a non-zero code to indicate failure
+}

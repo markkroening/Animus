@@ -11,7 +11,6 @@ import time
 import json
 import logging
 from typing import Optional, Tuple
-from dotenv import load_dotenv
 import google.generativeai as genai
 import sys
 
@@ -21,10 +20,6 @@ from animus_cli.data_models import LogCollection, SystemInfo, EventLogEntry
 # Configure logging
 logger = logging.getLogger(__name__)
 
-# Load API Key from .env file
-load_dotenv()
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-
 class GeminiAPIError(Exception):
     """Custom exception for Gemini API related errors"""
     pass
@@ -32,26 +27,27 @@ class GeminiAPIError(Exception):
 class LLMManager:
     """Manager class for Google Gemini API integration"""
     
-    def __init__(self, 
-                 model_name: str = 'gemini-2.5-flash-preview-04-17', 
-                 api_key: Optional[str] = None,
+    def __init__(self,
+                 model_name: str = 'gemini-2.5-flash-preview-04-17',
                  verbose: bool = False):
         """
         Initialize the LLM Manager for Gemini.
         
         Args:
-            model_name: The Gemini model to use (e.g., 'gemini-1.5-flash-latest').
-            api_key: Google API Key. If None, uses GEMINI_API_KEY from .env.
+            model_name: The Gemini model to use.
             verbose: Whether to show verbose output.
         """
         self.model_name = model_name
-        self.api_key = api_key or GEMINI_API_KEY
         self.verbose = verbose
         self.model = None
         self.log_processor = LogProcessor(verbose=verbose)
         
+        # Get API key from system environment variable
+        self.api_key = os.getenv("GEMINI_API_KEY")
         if not self.api_key:
-             raise GeminiAPIError("Gemini API Key not found. Please set GEMINI_API_KEY in your .env file or provide it during initialization.")
+            error_msg = "GEMINI_API_KEY environment variable is not set. Please set it in your system environment variables."
+            logger.error(error_msg)
+            raise GeminiAPIError(error_msg)
              
         # Create the client instance
         try:
@@ -64,7 +60,9 @@ class LLMManager:
             if self.verbose:
                  logger.info(f"Using model: {self.model_name}")
         except Exception as e:
-             raise GeminiAPIError(f"Failed to create Gemini model: {e}") from e
+            error_msg = f"Failed to create Gemini model: {e}"
+            logger.error(error_msg)
+            raise GeminiAPIError(error_msg) from e
              
     def _format_query_content(self, query: str, log_collection: LogCollection) -> str:
          """
@@ -80,6 +78,21 @@ class LLMManager:
                  # Logging happens within format_for_llm if needed, or add summary log here
                  summary = processed_data.get("EventSummary", {})
                  logger.info(f"Processed logs: {summary.get('TotalEvents', 0)} total events. Formatted length: {len(formatted_logs)} chars")
+                 
+             # Save formatted logs to a file alongside the JSON
+             try:
+                 # Get the path of the current log file from the LogCollection
+                 if hasattr(log_collection, 'file_path') and log_collection.file_path:
+                     base_path = str(log_collection.file_path)
+                     formatted_path = base_path.rsplit('.', 1)[0] + '_formatted.txt'
+                     with open(formatted_path, 'w', encoding='utf-8') as f:
+                         f.write(formatted_logs)
+                     if self.verbose:
+                         logger.info(f"Saved formatted logs to: {formatted_path}")
+                 else:
+                     logger.warning("Could not save formatted logs: LogCollection has no file_path attribute")
+             except Exception as e:
+                 logger.warning(f"Failed to save formatted logs: {e}")
                  
              # Check if processed logs exceeds size limit
              MAX_LOGS_CHARS = 100000  # Increased limit since processed data should be smaller
@@ -200,6 +213,64 @@ class LLMManager:
         except Exception as e:
             logger.error(f"Unexpected error during Gemini query: {e}")
             return f"Unexpected error: {e}", 0.0
+
+    def query(self, formatted_text: str, query: str, max_response_tokens: Optional[int] = None) -> str:
+        """
+        Process a query using the Gemini API with pre-formatted text.
+        
+        Args:
+            formatted_text: Pre-formatted text for the LLM.
+            query: The user's natural language question.
+            max_response_tokens: Optional max tokens for the response.
+
+        Returns:
+            Response text from the LLM.
+        """
+        if not self.model:
+             return "Error: Gemini model not ready."
+             
+        # Prepare content string
+        content_prompt = (
+            f"--- Log Data ---\n{formatted_text}\n--- End Log Data ---\n\n"
+            f"--- Technician Input ---\nTechnician Question: {query}\n--- End Technician Input ---\n\n"
+            "Animus Answer:"
+        )
+        
+        if self.verbose:
+             print(f"\n--- Sending Prompt to Gemini ({len(content_prompt)} chars) ---")
+             print(f"Query: {query}")
+             print("-----------------------------------")
+
+        try:
+            # Configure generation parameters
+            generation_config = genai.GenerationConfig(
+                temperature=0.2,
+                top_p=0.8,
+                top_k=40,
+                max_output_tokens=max_response_tokens or 2048
+            )
+            
+            # Generate content using the model instance
+            response = self.model.generate_content(
+                content_prompt,
+                generation_config=generation_config
+            )
+            
+            # Access response text safely
+            try:
+                 result_text = response.text
+            except ValueError:
+                 block_reason = getattr(response.prompt_feedback, 'block_reason', None)
+                 block_reason_name = getattr(block_reason, 'name', 'Unknown') if block_reason else 'Unknown'
+                 result_text = f"Response blocked by safety filter: {block_reason_name}"
+            except AttributeError:
+                 result_text = "Error: Could not parse response from Gemini."
+                
+            return result_text
+
+        except Exception as e:
+            logger.error(f"Unexpected error during Gemini query: {e}")
+            return f"Unexpected error: {e}"
 
 # Configure logging if module run directly
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s') 

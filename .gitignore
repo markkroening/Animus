@@ -77,4 +77,7 @@ Thumbs.db
 .vscode/
 .idea/
 *.swp
-*.swo 
+*.swo
+
+# API key batch file
+set_api_key.bat 

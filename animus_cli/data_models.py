@@ -4,6 +4,7 @@ Data models for representing Windows Event Log data.
 
 from dataclasses import dataclass, field
 from enum import Enum
+from pathlib import Path
 from typing import Dict, List, Any, Optional
 
 class EventLevel(Enum):
@@ -131,6 +132,7 @@ class LogCollection:
     system_info: SystemInfo
     system_events: List[EventLogEntry]
     application_events: List[EventLogEntry]
+    file_path: Optional[Path] = None  # Path to the source JSON file
 
     # Combined list of all events, calculated on demand
     _all_events: Optional[List[EventLogEntry]] = field(init=False, default=None)
