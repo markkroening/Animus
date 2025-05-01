@@ -4,12 +4,12 @@ Animus CLI is a powerful Windows Event Log analysis tool that uses AI to help te
 
 ## Features
 
-- Collect and analyze Windows Event Logs (System, Application, Security)
+- Collect and analyze Windows Event Logs (System and Application)
 - Natural language queries about system events
 - AI-powered log analysis using Google Gemini
 - Interactive Q&A mode for detailed investigation
 - Offline-first design - all analysis happens locally
-- Beautiful command-line interface with color support
+- Clean, minimal command-line interface
 
 ## Requirements
 
@@ -23,9 +23,9 @@ Animus CLI is a powerful Windows Event Log analysis tool that uses AI to help te
 ### Standard Installation
 1. Download the latest installer from the releases page
 2. Run `AnimusSetup.exe`
-3. Create a `.env` file in the installation directory with your Gemini API key:
-   ```
-   GEMINI_API_KEY=your_api_key_here
+3. Set your Gemini API key using the provided script:
+   ```batch
+   set_api_key.bat your_api_key_here
    ```
 
 ### Silent Installation
@@ -39,22 +39,21 @@ Note: A UAC prompt will still appear as this is required by Windows for security
 
 ## Usage
 
-Basic commands:
-```bash
-# Collect logs
-animus collect
+Start Animus in interactive mode:
+```batch
+animus
+```
 
-# Start interactive Q&A mode
-animus --qa
-
-# Get help
-animus --help
+Optional flags:
+```batch
+animus --verbose  # Enable verbose output for debugging
 ```
 
 Example questions:
 - "Why did my system reboot last night?"
 - "Show me any critical errors from the last 24 hours"
 - "Have there been any disk-related warnings?"
+- "What's the most common error in the application logs?"
 
 ## Development Setup
 
@@ -69,7 +68,10 @@ Example questions:
    pip install -r requirements.txt
    ```
 
-3. Create `.env` file with your Gemini API key
+3. Set your Gemini API key:
+   ```batch
+   set_api_key.bat your_api_key_here
+   ```
 
 4. Run in development mode:
    ```bash

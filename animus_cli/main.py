@@ -1,33 +1,30 @@
 #!/usr/bin/env python3
 """
-Animus CLI - Main Entry Point (Simplified - No Command-Line Arguments)
+Animus CLI - Main Entry Point
 Orchestrates log collection, processing, and interaction with the LLM.
 """
 
 import sys
 import os
 import subprocess
-import json # Keep for potential future use, though not directly used now
+import json
 from pathlib import Path
 import argparse
-from typing import Optional, Tuple, NoReturn # Keep typing imports
+from typing import Optional, Tuple, NoReturn
 
 # Import components and default config values
-# Ensure these defaults are appropriate or adjust them here/in config.py
 from animus_cli.config import DEFAULT_OUTPUT_PATH, DEFAULT_MODEL_NAME, LOG_COLLECTOR_SCRIPT
 from animus_cli.cli import AnimusCLI
 
 # --- Configuration ---
 SCRIPT_DIR = Path(__file__).parent
-# Read API Key from Environment Variable at the start
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
-# --- Default Settings (Instead of Args) ---
-# If these should be configurable, config files are better than CLI args now
+# --- Default Settings ---
 DEFAULT_HOURS_BACK = 168
 DEFAULT_MAX_EVENTS = 500
-DEFAULT_VERBOSE = False # Set to True for debugging by default if needed
-DEFAULT_SKIP_COLLECTION = False # Set to True to always skip collection
+DEFAULT_VERBOSE = False
+DEFAULT_SKIP_COLLECTION = False
 
 # --- Helper Functions ---
 
@@ -45,14 +42,12 @@ def check_api_key() -> None:
         )
 
 def run_log_collector(output_path: Path, hours_back: int, max_events: int, verbose: bool) -> bool:
-    """
-    Runs the PowerShell script to collect logs.
-    (Assumes parameters are passed correctly based on defaults or config)
-    """
+    """Runs the PowerShell script to collect logs."""
     if not LOG_COLLECTOR_SCRIPT.is_file():
-        print(f"[WARN] Log collector script not found at expected location: {LOG_COLLECTOR_SCRIPT}", file=sys.stderr)
-        print("[WARN] Skipping log collection. Attempting to use existing log file if available.", file=sys.stderr)
-        return True # Allow proceeding
+        if verbose:
+            print(f"[WARN] Log collector script not found at expected location: {LOG_COLLECTOR_SCRIPT}", file=sys.stderr)
+            print("[WARN] Skipping log collection. Attempting to use existing log file if available.", file=sys.stderr)
+        return True
 
     command = [
         "powershell.exe",
@@ -79,19 +74,19 @@ def run_log_collector(output_path: Path, hours_back: int, max_events: int, verbo
             print("[INFO] Log Collector STDOUT:")
             print(result.stdout)
         if result.stderr:
-             print("[ERROR] Log Collector STDERR:", file=sys.stderr)
-             print(result.stderr, file=sys.stderr)
+            print("[ERROR] Log Collector STDERR:", file=sys.stderr)
+            print(result.stderr, file=sys.stderr)
 
         if result.returncode != 0:
             print(f"[ERROR] Log collector script failed with exit code {result.returncode}.", file=sys.stderr)
             return False
 
         if verbose:
-             print(f"[SUCCESS] Log collector script finished successfully. Output at: {output_path}")
+            print(f"[SUCCESS] Log collector script finished successfully. Output at: {output_path}")
         return True
 
     except FileNotFoundError:
-         exit_with_error(f"Powershell execution failed. Is 'powershell.exe' in your system's PATH?")
+        exit_with_error(f"Powershell execution failed. Is 'powershell.exe' in your system's PATH?")
     except Exception as e:
         print(f"[ERROR] An unexpected error occurred running log collection script: {e}", file=sys.stderr)
         return False
@@ -100,19 +95,15 @@ def run_log_collector(output_path: Path, hours_back: int, max_events: int, verbo
 
 def main() -> int:
     """CLI Entry Point."""
-    # Parse command line arguments
     parser = argparse.ArgumentParser(description="Animus Log Analysis Tool")
-    parser.add_argument("--output", type=str, default=str(DEFAULT_OUTPUT_PATH), help="Output file path")
     parser.add_argument("--verbose", action="store_true", help="Enable verbose output")
-    parser.add_argument("--interactive", action="store_true", help="Run in interactive mode")
-    parser.add_argument("--silent", action="store_true", help="Run in silent mode")
     args = parser.parse_args()
 
     # 1. Check Environment (API Key)
     check_api_key()
 
-    # 2. Set Parameters (Using Defaults and CLI args)
-    log_file_path = Path(args.output)
+    # 2. Set Parameters
+    log_file_path = Path(DEFAULT_OUTPUT_PATH)
     verbose = args.verbose
     hours_back = DEFAULT_HOURS_BACK
     max_events = DEFAULT_MAX_EVENTS
@@ -132,31 +123,31 @@ def main() -> int:
         if verbose:
             print(f"[INFO] Ensured log output directory exists: {log_file_path.parent}")
     except Exception as e:
-         exit_with_error(f"Could not create output directory '{log_file_path.parent}': {e}")
+        exit_with_error(f"Could not create output directory '{log_file_path.parent}': {e}")
 
     # 4. Collect Logs (unless skipped)
     if not skip_collection:
         if verbose:
-             print("[INFO] Starting log collection...")
+            print("[INFO] Starting log collection...")
         if not run_log_collector(log_file_path, hours_back, max_events, verbose):
-            return 1 # Indicate failure
+            return 1
     elif verbose:
-         print("[INFO] Skipping log collection (using default setting or config).")
+        print("[INFO] Skipping log collection (using default setting or config).")
 
     # 5. Instantiate and Run CLI
     try:
         if verbose:
             print(f"[INFO] Initializing AnimusCLI (Model: {DEFAULT_MODEL_NAME})...")
-        cli = AnimusCLI(verbose=verbose) # Pass verbose setting
+        cli = AnimusCLI(verbose=verbose)
 
         if verbose:
             print(f"[INFO] Loading logs from: {log_file_path}")
-        cli.load_logs(str(log_file_path)) # Load logs expects path
+        cli.load_logs(str(log_file_path))
         if verbose:
-             print("[SUCCESS] Logs loaded successfully.")
+            print("[SUCCESS] Logs loaded successfully.")
 
     except FileNotFoundError:
-         exit_with_error(f"Log file not found at '{log_file_path}'. Cannot proceed.")
+        exit_with_error(f"Log file not found at '{log_file_path}'. Cannot proceed.")
     except Exception as e:
         print(f"[ERROR] Failed to initialize or load logs: {e}", file=sys.stderr)
         if verbose:
@@ -164,37 +155,31 @@ def main() -> int:
             traceback.print_exc()
         return 1
 
-    # 6. Start Interactive Loop (This is now the only mode)
-    if args.interactive and not args.silent:
-        print("\n" + "="*30)
-        print(" Animus Log Analysis Tool")
-        print("="*30)
-        print(f"Using model: {DEFAULT_MODEL_NAME}")
-        print("Type 'exit' or 'quit' to end session.")
+    # 6. Start Interactive Loop
+    print("\nAnimus> ", end="", flush=True)
 
     while True:
         try:
-            query = input("\nAnimus> ")
+            query = input()
             if query.lower() in ['exit', 'quit']:
-                if args.interactive and not args.silent:
-                    print("Exiting Animus.")
                 break
             if not query:
+                print("Animus> ", end="", flush=True)
                 continue
 
-            cli.process_query(query) # Handles processing and printing output
+            cli.process_query(query)
+            print("\nAnimus> ", end="", flush=True)
 
         except KeyboardInterrupt:
-            if args.interactive and not args.silent:
-                print("\nExiting...")
             break
         except Exception as e:
             print(f"[ERROR] An error occurred during query processing: {e}", file=sys.stderr)
             if verbose:
                 import traceback
                 traceback.print_exc()
+            print("\nAnimus> ", end="", flush=True)
 
-    return 0 # Indicate success
+    return 0
 
 # --- Entry Point Check ---
 if __name__ == "__main__":

@@ -79,5 +79,6 @@ Thumbs.db
 *.swp
 *.swo
 
-# API key batch file
-set_api_key.bat 
+# API key batch files
+set_api_key.bat
+set_api_key_silent.bat 
