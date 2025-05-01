@@ -303,47 +303,31 @@ class LogProcessor:
             output_lines.append(f"- Covering Period: {tr.get('StartTime', 'N/A')} to {tr.get('EndTime', 'N/A')}")
             output_lines.append("")
 
-        # Add event summary statistics
-        summary = processed_data.get("EventSummary", {})
-        if summary:
-            output_lines.append("## EVENT SUMMARY ##")
-            output_lines.append(f"- Total Events Found: {summary.get('TotalEvents', 0)}")
-            levels = summary.get("ByLevel", {})
-            level_summary = ", ".join(f"{lvl}: {cnt}" for lvl, cnt in levels.items() if cnt > 0)
-            output_lines.append(f"- Counts by Level: {level_summary if level_summary else 'None'}")
-
-            top_src = summary.get("TopSources", [])
-            if top_src:
-                 output_lines.append("- Top Sources:")
-                 for item in top_src:
-                      output_lines.append(f"  - {item['Source']} ({item['LogType']}): {item['Count']} times")
-
-            top_ids = summary.get("TopEventIDs", [])
-            if top_ids:
-                 output_lines.append("- Top Event IDs:")
-                 for item in top_ids:
-                      output_lines.append(f"  - ID {item['EventID']} ({item['LogType']}): {item['Count']} times")
-            output_lines.append("")
-
         # Add aggregated events
         aggregated_events = processed_data.get("AggregatedEvents", [])
         if aggregated_events:
-            output_lines.append("## AGGREGATED EVENT DETAILS (Sorted by Frequency) ##")
-            # Limit number of events sent to LLM? Maybe top 20-30?
-            # Or filter by severity? e.g. Critical, Error, Warning only?
-            # For now, include all aggregated events. Add filtering logic here if needed.
-            # Example: events_to_format = [e for e in aggregated_events if e['Level'] in ['Critical', 'Error', 'Warning']][:30]
-            events_to_format = aggregated_events # Include all for now
-
-            if not events_to_format:
-                 output_lines.append("No significant events found matching current filters.")
-            else:
-                for event in events_to_format:
-                    self._format_event(event, output_lines)
+            output_lines.append("## AGGREGATED EVENT DETAILS (Sorted by Severity) ##")
             
-            if len(aggregated_events) > len(events_to_format):
-                 output_lines.append(f"... ({len(aggregated_events) - len(events_to_format)} additional aggregated event groups omitted)")
-
+            # Define severity order for sorting
+            severity_order = {
+                "Critical": 0,
+                "Error": 1,
+                "Warning": 2,
+                "Information": 3,
+                "Verbose": 4
+            }
+            
+            # Sort events by severity first, then by count
+            sorted_events = sorted(
+                aggregated_events,
+                key=lambda e: (
+                    severity_order.get(e.get("Level", "Information"), 99),
+                    -e.get("OccurrenceCount", 0)
+                )
+            )
+            
+            for event in sorted_events:
+                self._format_event(event, output_lines)
 
         return "\n".join(output_lines)
 
@@ -404,14 +388,14 @@ class LogProcessor:
         header = f"[{level}] EventID: {event_id} | Source: {source} | Count: {count}"
         output_lines.append(header)
         output_lines.append(f"  Msg: {message}")
-        if count > 1 and first_ts and last_ts:
-             output_lines.append(f"  First: {first_ts} | Last: {last_ts}")
+        
+        if count > 1:
+            if example_ts_list:
+                # Show the last 5 timestamps, or all if less than 5
+                recent_timestamps = example_ts_list[-5:] if len(example_ts_list) > 5 else example_ts_list
+                output_lines.append(f"  Recent Times: {', '.join(recent_timestamps)}")
         elif last_ts: # Handle single occurrence case
-             output_lines.append(f"  Time: {last_ts}")
-
-        # Optionally show example timestamps if count > 1 and different from first/last
-        # if count > 1 and example_ts_list and len(example_ts_list) > 1:
-        #    output_lines.append(f"  Recent Times: {', '.join(example_ts_list)}")
+            output_lines.append(f"  Time: {last_ts}")
 
         output_lines.append("") # Blank line between entries
 

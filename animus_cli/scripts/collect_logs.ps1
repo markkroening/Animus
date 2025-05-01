@@ -2,8 +2,8 @@ param(
     [Parameter(Mandatory=$true)]
     [string]$OutputPath,
     
-    [Parameter(Mandatory=$false)]
-    [int]$HoursBack = 48,
+    [Parameter(Mandatory=$true)]
+    [int]$HoursBack,
     
     [Parameter(Mandatory=$false)]
     [int]$MaxEventsPerLog = 500

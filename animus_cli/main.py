@@ -24,7 +24,7 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 # --- Default Settings (Instead of Args) ---
 # If these should be configurable, config files are better than CLI args now
-DEFAULT_HOURS_BACK = 48
+DEFAULT_HOURS_BACK = 168
 DEFAULT_MAX_EVENTS = 500
 DEFAULT_VERBOSE = False # Set to True for debugging by default if needed
 DEFAULT_SKIP_COLLECTION = False # Set to True to always skip collection
