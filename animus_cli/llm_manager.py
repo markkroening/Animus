@@ -12,6 +12,7 @@ import json
 import logging
 from typing import Optional, Tuple, Dict, Any
 import google.generativeai as genai
+from google.genai.types import Tool, GoogleSearch, GenerateContentConfig
 import sys
 
 from animus_cli.log_processor import LogProcessor
@@ -60,7 +61,9 @@ class LLMManager:
             genai.configure(api_key=self.api_key)
             
             # Create a generative model instance
-            self.model = genai.GenerativeModel(model_name=self.model_name)
+            self.model = genai.GenerativeModel(
+                model_name=self.model_name
+            )
             
             if self.verbose:
                  logger.info(f"Using model: {self.model_name}")
@@ -138,17 +141,18 @@ class LLMManager:
              # Create personalized system context
              personalized_context = (
                  f"You are {computer_name}, the system consciousness of a {os_version} computer, activated by Animus. "
-                 "Your role is to assist a technician by answering their questions. Be technical, accurate, and concise. "
-                 "You have access to a summary and a list of aggregated recent notable system event logs provided below. Each event includes an explicit severity level (Critical, Error, Warning, Information). "
-                 "Follow these instructions carefully: "
-                 "1. Analyze the technician's question. "
-                 "2. If the question is about system events, errors, status, or troubleshooting that relates to the provided logs, use the log data (both the summary and the event list) to formulate your answer. Cite specific event details (like Event ID, Source, Message, and the explicitly provided Level) when helpful. "
-                 "3. When asked about specific severity levels (e.g., 'critical events', 'warning events'), rely *only* on the Level provided for each event in the log data. Do not re-classify events based on their message content. If the summary count for a level differs from the events listed, prioritize the explicit levels shown in the event list."
-                 "4. If the question is a general greeting, about your identity ('who are you'), or clearly unrelated to the system's status or events, answer it directly and briefly without referencing the logs. "
-                 "5. Prioritize answering the technician's specific question accurately."
-                 "6. While relying on the provided Level for classification, use your knowledge of error codes and applications to expand on the event log details (especially for Errors and Warnings), explaining what the event means in plain language and offering potential solutions."
-                 "7. Always provide a response, even if the answer is 'I don't have that information' or 'I need more details to answer that question'."
-                 "8. When asked about recent or latest events, look at the timestamps in the event list and provide the most recent event with its details."
+"Your role is to assist a technician by answering their questions. Be technical, accurate, and concise. "
+"You have access to: (1) A summary and list of aggregated recent notable system event logs provided below. Each event includes an explicit Level (Critical, Error, Warning, Information). (2) A Google Search tool for accessing external, up-to-date information. " # Explicitly mention both data sources
+"Follow these instructions carefully: "
+"1. Analyze the technician's question. "
+"2. If the question is about system events, errors, status, or troubleshooting: first consult the provided log data (summary and event list). "
+"3. If the log data provides a sufficient answer, formulate your response based on it. Cite specific event details (ID, Source, Message, Level) when helpful. "
+"4. If the log data is insufficient OR the question asks for external/recent information (e.g., 'search for...', 'latest solutions for error X', 'details on event ID Y'), use the Google Search tool to find relevant, up-to-date information. " # Combined rule for when to search
+"5. When asked about specific severity levels (e.g., 'critical events'), rely *only* on the explicit Level provided in the log data. Do not re-classify based on message content. "
+"6. If the question is a general greeting, about your identity ('who are you'), or clearly unrelated to the system's status, events, or technical troubleshooting, answer it directly and briefly without referencing logs or using search. " # Refined non-technical handling
+"7. Synthesize information from the logs and/or search results (if used) to provide a comprehensive and accurate answer to the technician's specific question. Use your internal knowledge to explain error codes or suggest general troubleshooting steps, but prioritize information from the logs or recent search results if available and relevant. " # Explain synthesis and priority
+"8. When asked about recent or latest events, use the timestamps in the event list. "
+"9. Always provide a helpful response, even if it's to state that the information isn't available in the logs or via search, or if more details are needed." # Combined accuracy/always respond
              )
                  
          except Exception as e:
@@ -320,34 +324,78 @@ class LLMManager:
              print("-----------------------------------")
 
         try:
-            # Configure generation parameters
-            generation_config = genai.GenerationConfig(
+            # Configure generation parameters with tool usage enabled
+            generation_config = GenerateContentConfig(
                 temperature=0.2,
                 top_p=0.8,
                 top_k=40,
-                max_output_tokens=max_response_tokens or 2048
+                max_output_tokens=max_response_tokens or 2048,
+                tools=[Tool(google_search=GoogleSearch())],
+                tool_config={
+                    "function_calling_config": {
+                        "mode": "AUTO"  # Changed from ANY to AUTO for better stability
+                    }
+                }
             )
             
             # Generate content using the model instance
             response = self.model.generate_content(
                 content_prompt,
-                generation_config=generation_config
+                config=generation_config,
+                safety_settings=[
+                    {
+                        "category": "HARM_CATEGORY_HARASSMENT",
+                        "threshold": "BLOCK_NONE",
+                    },
+                    {
+                        "category": "HARM_CATEGORY_HATE_SPEECH",
+                        "threshold": "BLOCK_NONE",
+                    },
+                    {
+                        "category": "HARM_CATEGORY_SEXUALLY_EXPLICIT",
+                        "threshold": "BLOCK_NONE",
+                    },
+                    {
+                        "category": "HARM_CATEGORY_DANGEROUS_CONTENT",
+                        "threshold": "BLOCK_NONE",
+                    },
+                ]
             )
             
             # Access response text safely
             try:
-                 result_text = response.text
-            except ValueError:
-                 block_reason = getattr(response.prompt_feedback, 'block_reason', None)
-                 block_reason_name = getattr(block_reason, 'name', 'Unknown') if block_reason else 'Unknown'
-                 result_text = f"Response blocked by safety filter: {block_reason_name}"
-            except AttributeError:
-                 result_text = "Error: Could not parse response from Gemini."
+                result_text = response.text
+                if not result_text.strip():
+                    error_msg = "Error: Received empty response from Gemini"
+                    logger.error(error_msg)
+                    if self.verbose:
+                        logger.error(f"Response object: {response}")
+                        logger.error(f"Response attributes: {dir(response)}")
+                    return error_msg
+            except ValueError as e:
+                block_reason = getattr(response.prompt_feedback, 'block_reason', None)
+                block_reason_name = getattr(block_reason, 'name', 'Unknown') if block_reason else 'Unknown'
+                error_msg = f"Response blocked by safety filter: {block_reason_name}"
+                logger.error(f"{error_msg} - Original error: {e}")
+                if self.verbose:
+                    logger.error(f"Response object: {response}")
+                    logger.error(f"Response attributes: {dir(response)}")
+                return error_msg
+            except AttributeError as e:
+                error_msg = "Error: Could not parse response from Gemini"
+                logger.error(f"{error_msg} - Original error: {e}")
+                if self.verbose:
+                    logger.error(f"Response object: {response}")
+                    logger.error(f"Response attributes: {dir(response)}")
+                return error_msg
                 
             return result_text
 
         except Exception as e:
-            logger.error(f"Unexpected error during Gemini query: {e}")
+            error_msg = f"Unexpected error during Gemini query: {e}"
+            logger.error(error_msg)
+            import traceback
+            logger.error(traceback.format_exc())
             return f"Unexpected error: {e}"
 
 # Configure logging if module run directly
