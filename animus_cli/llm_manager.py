@@ -10,12 +10,11 @@ import os
 import time
 import json
 import logging
-from typing import Optional, Tuple, Union, Dict, Any
+from typing import Optional, Tuple, Dict, Any
 import google.generativeai as genai
 import sys
 
-from animus_cli.log_processor import LogProcessor, process_log_file
-from animus_cli.data_models import LogCollection, SystemInfo, EventLogEntry
+from animus_cli.log_processor import LogProcessor
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -70,39 +69,34 @@ class LLMManager:
             logger.error(error_msg)
             raise GeminiAPIError(error_msg) from e
              
-    def _format_query_content(self, query: str, log_collection: LogCollection) -> str:
+    def _format_query_content(self, query: str, processed_data: Dict[str, Any]) -> str:
          """
          Prepare a string containing processed log data and user query in a structured format
          """
-         # Process the raw log data to make it more LLM-friendly
          try:            
-             # Convert LogCollection to dictionary if needed
-             if hasattr(log_collection, 'to_dict'):
-                 log_data = log_collection.to_dict()
-             elif isinstance(log_collection, dict):
-                 log_data = log_collection
-             else:
-                 raise ValueError("log_collection must be a dictionary or have a to_dict method")
+             # Validate input data
+             if not processed_data:
+                 raise ValueError("Processed data is empty")
                  
-             # Use LogProcessor to aggregate and format
-             processed_data = self.log_processor.process_logs(log_data)
+             if not isinstance(processed_data, dict):
+                 raise ValueError(f"Processed data must be a dictionary, got {type(processed_data)}")
+                 
+             # Format the processed data for LLM consumption
              formatted_logs = self.log_processor.format_for_llm(processed_data)
+             
+             if not formatted_logs:
+                 raise ValueError("Formatted logs are empty")
 
              if self.verbose:
                  # Logging happens within format_for_llm if needed, or add summary log here
                  summary = processed_data.get("EventSummary", {})
-                 logger.info(f"Processed logs: {summary.get('TotalEvents', 0)} total events. Formatted length: {len(formatted_logs)} chars")
+                 logger.info(f"Formatted logs: {summary.get('TotalEvents', 0)} total events. Formatted length: {len(formatted_logs)} chars")
                  
              # Save formatted logs to a file alongside the JSON
              try:
-                 # Get the path of the current log file from the LogCollection or use default path
-                 if hasattr(log_collection, 'file_path') and log_collection.file_path:
-                     base_path = str(log_collection.file_path)
-                 else:
-                     # Use default path in logs directory
-                     logs_dir = os.path.join(os.path.expanduser("~"), "AppData", "Local", "Animus", "logs")
-                     base_path = os.path.join(logs_dir, "animus_logs")
-                     
+                 # Use default path in logs directory
+                 logs_dir = os.path.join(os.path.expanduser("~"), "AppData", "Local", "Animus", "logs")
+                 base_path = os.path.join(logs_dir, "animus_logs")
                  formatted_path = base_path.rsplit('.', 1)[0] + '_formatted.txt'
                  with open(formatted_path, 'w', encoding='utf-8') as f:
                      f.write(formatted_logs)
@@ -119,14 +113,15 @@ class LLMManager:
                  formatted_logs = formatted_logs[:MAX_LOGS_CHARS] + "\n... [truncated due to size limits]"
                  
              # Extract system information for personalized prompt
-             # Get sys info dict from processed data
              sys_info_dict = processed_data.get("SystemInfo", {})
+             if not sys_info_dict:
+                 logger.warning("No system information found in processed data")
+                 sys_info_dict = {}
+                 
              computer_name = sys_info_dict.get('ComputerName', 'this computer')
              os_version = sys_info_dict.get('OSVersion', 'Windows')
              
              # Format system information section
-             # Re-use the formatting logic from format_for_llm or simplify
-             # For now, just use basic info
              if sys_info_dict and "Error" not in sys_info_dict:
                  system_info_section = (
                      f"Computer Name: {sys_info_dict.get('ComputerName', 'Unknown')}\n"
@@ -139,7 +134,7 @@ class LLMManager:
                  )
              else:
                  system_info_section = "System information unavailable."
-             
+                 
              # Create personalized system context
              personalized_context = (
                  f"You are {computer_name}, the system consciousness of a {os_version} computer, activated by Animus. "
@@ -149,17 +144,18 @@ class LLMManager:
                  "1. Analyze the technician's question. "
                  "2. If the question is about system events, errors, status, or troubleshooting that relates to the provided logs, use the log data (both the summary and the event list) to formulate your answer. Cite specific event details (like Event ID, Source, Message, and the explicitly provided Level) when helpful. "
                  "3. When asked about specific severity levels (e.g., 'critical events', 'warning events'), rely *only* on the Level provided for each event in the log data. Do not re-classify events based on their message content. If the summary count for a level differs from the events listed, prioritize the explicit levels shown in the event list."
-                 "3. If the question is a general greeting, about your identity ('who are you'), or clearly unrelated to the system's status or events, answer it directly and briefly without referencing the logs. "
-                 "4. Prioritize answering the technician's specific question accurately."
-                 "5. While relying on the provided Level for classification, use your knowledge of error codes and applications to expand on the event log details (especially for Errors and Warnings), explaining what the event means in plain language and offering potential solutions."
+                 "4. If the question is a general greeting, about your identity ('who are you'), or clearly unrelated to the system's status or events, answer it directly and briefly without referencing the logs. "
+                 "5. Prioritize answering the technician's specific question accurately."
+                 "6. While relying on the provided Level for classification, use your knowledge of error codes and applications to expand on the event log details (especially for Errors and Warnings), explaining what the event means in plain language and offering potential solutions."
+                 "7. Always provide a response, even if the answer is 'I don't have that information' or 'I need more details to answer that question'."
+                 "8. When asked about recent or latest events, look at the timestamps in the event list and provide the most recent event with its details."
              )
                  
          except Exception as e:
-             logger.error(f"Error processing logs for LLM formatting: {e}")
+             logger.error(f"Error formatting logs for LLM: {e}")
              import traceback
              logger.error(traceback.format_exc())
-             # Instead of falling back, raise an error to be handled by the caller.
-             raise ValueError(f"Failed to process and format log data for LLM: {e}") from e
+             raise ValueError(f"Failed to format log data for LLM: {e}") from e
          
          # Combine all content in a structured format
          full_prompt = (
@@ -172,68 +168,129 @@ class LLMManager:
          
          if self.verbose:
              logger.info(f"Total prompt size: {len(full_prompt)} characters")
+             logger.info(f"Prompt structure:\n{full_prompt}")
          
          return full_prompt
 
-    def query_logs(self, query: str, log_collection: Union[Dict[str, Any], LogCollection], max_response_tokens: Optional[int] = None) -> Tuple[str, float]:
+    def query_logs(self, query: str, processed_data: Dict[str, Any], max_response_tokens: Optional[int] = None) -> Tuple[str, float]:
         """
         Process a query using the Gemini API.
         
         Args:
             query: The user's natural language question.
-            log_collection: The parsed log data object or dictionary.
+            processed_data: The pre-processed log data.
             max_response_tokens: Optional max tokens for the response.
 
         Returns:
             Tuple of (response text, generation time in seconds).
         """
         if not self.model:
-             return "Error: Gemini model not ready.", 0.0
+            error_msg = "Error: Gemini model not ready."
+            logger.error(error_msg)
+            return error_msg, 0.0
              
         # Prepare content string
-        content_prompt = self._format_query_content(query, log_collection)
+        try:
+            content_prompt = self._format_query_content(query, processed_data)
+            if self.verbose:
+                logger.info(f"Content prompt length: {len(content_prompt)} characters")
+                logger.info(f"First 500 chars of prompt: {content_prompt[:500]}")
+        except Exception as e:
+            error_msg = f"Error formatting query content: {e}"
+            logger.error(error_msg)
+            return error_msg, 0.0
         
         if self.verbose:
-             print(f"\n--- Sending Prompt to Gemini ({len(content_prompt)} chars) ---")
-             print(f"Query: {query}")
-             print("-----------------------------------")
+            print(f"\n--- Sending Prompt to Gemini ({len(content_prompt)} chars) ---")
+            print(f"Query: {query}")
+            print("-----------------------------------")
 
         start_time = time.time()
         try:
-            # Configure generation parameters
+            # Configure generation parameters with higher token limits
             generation_config = genai.GenerationConfig(
                 temperature=0.2,
                 top_p=0.8,
                 top_k=40,
-                max_output_tokens=max_response_tokens or 2048
+                max_output_tokens=4096  # Increased from 2048
             )
+            
+            if self.verbose:
+                logger.info(f"Generation config: {generation_config}")
             
             # Generate content using the model instance
             response = self.model.generate_content(
                 content_prompt,
-                generation_config=generation_config
+                generation_config=generation_config,
+                safety_settings=[
+                    {
+                        "category": "HARM_CATEGORY_HARASSMENT",
+                        "threshold": "BLOCK_NONE",
+                    },
+                    {
+                        "category": "HARM_CATEGORY_HATE_SPEECH",
+                        "threshold": "BLOCK_NONE",
+                    },
+                    {
+                        "category": "HARM_CATEGORY_SEXUALLY_EXPLICIT",
+                        "threshold": "BLOCK_NONE",
+                    },
+                    {
+                        "category": "HARM_CATEGORY_DANGEROUS_CONTENT",
+                        "threshold": "BLOCK_NONE",
+                    },
+                ]
             )
             
             generation_time = time.time() - start_time
             
+            if self.verbose:
+                logger.info(f"Raw response type: {type(response)}")
+                logger.info(f"Response attributes: {dir(response)}")
+                if hasattr(response, 'prompt_feedback'):
+                    logger.info(f"Prompt feedback: {response.prompt_feedback}")
+            
             # Access response text safely
             try:
-                 result_text = response.text
-            except ValueError:
-                 block_reason = getattr(response.prompt_feedback, 'block_reason', None)
-                 block_reason_name = getattr(block_reason, 'name', 'Unknown') if block_reason else 'Unknown'
-                 result_text = f"Response blocked by safety filter: {block_reason_name}"
-            except AttributeError:
-                 result_text = "Error: Could not parse response from Gemini."
+                result_text = response.text
+                if not result_text.strip():
+                    error_msg = "Error: Received empty response from Gemini"
+                    logger.error(error_msg)
+                    if self.verbose:
+                        logger.error(f"Response object: {response}")
+                        logger.error(f"Response attributes: {dir(response)}")
+                        logger.error(f"Usage metadata: {getattr(response, 'usage_metadata', 'Not available')}")
+                    return error_msg, generation_time
+            except ValueError as e:
+                block_reason = getattr(response.prompt_feedback, 'block_reason', None)
+                block_reason_name = getattr(block_reason, 'name', 'Unknown') if block_reason else 'Unknown'
+                error_msg = f"Response blocked by safety filter: {block_reason_name}"
+                logger.error(f"{error_msg} - Original error: {e}")
+                if self.verbose:
+                    logger.error(f"Response object: {response}")
+                    logger.error(f"Response attributes: {dir(response)}")
+                return error_msg, generation_time
+            except AttributeError as e:
+                error_msg = "Error: Could not parse response from Gemini"
+                logger.error(f"{error_msg} - Original error: {e}")
+                if self.verbose:
+                    logger.error(f"Response object: {response}")
+                    logger.error(f"Response attributes: {dir(response)}")
+                return error_msg, generation_time
 
             if self.verbose:
                 logger.info(f"Gemini response received in {generation_time:.2f} seconds")
+                logger.info(f"Response length: {len(result_text)} characters")
+                logger.info(f"First 500 chars of response: {result_text[:500]}")
                 
             return result_text, generation_time
 
         except Exception as e:
-            logger.error(f"Unexpected error during Gemini query: {e}")
-            return f"Unexpected error: {e}", 0.0
+            error_msg = f"Unexpected error during Gemini query: {e}"
+            logger.error(error_msg)
+            import traceback
+            logger.error(traceback.format_exc())
+            return error_msg, 0.0
 
     def query(self, formatted_text: str, query: str, max_response_tokens: Optional[int] = None) -> str:
         """

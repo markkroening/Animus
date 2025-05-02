@@ -15,12 +15,30 @@ goto :parse_args
 
 :: Get the directory where this batch file is located
 set "SCRIPT_DIR=%~dp0"
-set "ANIMUS_EXE=%SCRIPT_DIR%animus_cli\main.py"
+set "INSTALL_DIR=C:\Program Files (x86)\Animus CLI"
+
+:: Try to find the main script in multiple locations
+set "ANIMUS_EXE="
+if exist "!SCRIPT_DIR!animus_cli\main.py" (
+    set "ANIMUS_EXE=!SCRIPT_DIR!animus_cli\main.py"
+) else if exist "!INSTALL_DIR!\animus_cli\main.py" (
+    set "ANIMUS_EXE=!INSTALL_DIR!\animus_cli\main.py"
+)
+
+if not defined ANIMUS_EXE (
+    echo Error: Animus main script not found in either:
+    echo   !SCRIPT_DIR!animus_cli\main.py
+    echo   !INSTALL_DIR!\animus_cli\main.py
+    echo Please ensure the application is properly installed
+    pause
+    exit /b 1
+)
+
 set "LOG_DIR=%LOCALAPPDATA%\Animus\logs"
 set "LOG_FILE=%LOG_DIR%\animus_logs.json"
 
-:: Set Python path
-set "PYTHONPATH=%SCRIPT_DIR%;%PYTHONPATH%"
+:: Set Python path to include both possible locations
+set "PYTHONPATH=!SCRIPT_DIR!;!INSTALL_DIR!;%PYTHONPATH%"
 
 :: Check if Python is installed
 where python >nul 2>nul
@@ -31,24 +49,17 @@ if %ERRORLEVEL% neq 0 (
     exit /b 1
 )
 
-:: Check if the main script exists
-if not exist "%ANIMUS_EXE%" (
-    echo Error: Animus main script not found at "%ANIMUS_EXE%"
-    echo Please ensure the application is properly installed
-    pause
-    exit /b 1
-)
-
 :: Create log directory if it doesn't exist
-if not exist "%LOG_DIR%" (
-    mkdir "%LOG_DIR%"
+if not exist "!LOG_DIR!" (
+    mkdir "!LOG_DIR!"
 )
 
 :: Run Animus with the appropriate arguments
 if %VERBOSE_MODE%==1 (
-    python "%ANIMUS_EXE%" --verbose
+    echo Running in verbose mode...
+    python "!ANIMUS_EXE!" --verbose
 ) else (
-    python "%ANIMUS_EXE%"
+    python "!ANIMUS_EXE!"
 )
 
 :: Check the exit code

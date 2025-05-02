@@ -36,7 +36,8 @@ class AnimusCLI:
         self.verbose = verbose
         self.llm = None
         self.log_processor = LogProcessor(verbose=verbose)
-        self.log_data = None
+        self.raw_log_data = None
+        self.processed_log_data = None
         
         # Set log level based on verbose flag
         if verbose:
@@ -58,18 +59,26 @@ class AnimusCLI:
             
     def load_logs(self, log_file: str) -> None:
         """
-        Load logs from a file.
+        Load and process logs from a file.
         
         Args:
             log_file: Path to the log file to load.
         """
         try:
+            # Load raw JSON data
             with open(log_file, 'r') as f:
-                self.log_data = json.load(f)
+                self.raw_log_data = json.load(f)
+            
+            # Process the logs once
+            self.processed_log_data = self.log_processor.process_logs(self.raw_log_data)
+            
             if self.verbose:
-                logger.debug(f"Loaded logs from {log_file}")
+                logger.debug(f"Loaded and processed logs from {log_file}")
+                summary = self.processed_log_data.get("EventSummary", {})
+                logger.debug(f"Processed {summary.get('TotalEvents', 0)} total events")
+                
         except Exception as e:
-            logger.error(f"Failed to load logs: {e}")
+            logger.error(f"Failed to load or process logs: {e}")
             sys.exit(1)
             
     def process_query(self, query: str) -> None:
@@ -79,23 +88,36 @@ class AnimusCLI:
         Args:
             query: The natural language query to process.
         """
-        if not self.log_data:
-            logger.error("No logs loaded. Please load logs first.")
+        if not self.processed_log_data:
+            error_msg = "No logs loaded. Please load logs first."
+            logger.error(error_msg)
+            print(f"\nError: {error_msg}")
             return
             
         if not self.llm:
             self.initialize_llm()
             
         try:
-            # Query the LLM with the raw log data
-            response_text, _ = self.llm.query_logs(query, self.log_data)
-            print(response_text)
+            # Query the LLM with the pre-processed log data
+            response_text, generation_time = self.llm.query_logs(query, self.processed_log_data)
+            
+            # Check for error messages in the response
+            if response_text.startswith("Error:"):
+                print(f"\n{response_text}")
+                if self.verbose:
+                    print(f"Query took {generation_time:.2f} seconds")
+            else:
+                print(f"\n{response_text}")
+                if self.verbose:
+                    print(f"Query took {generation_time:.2f} seconds")
             
         except Exception as e:
-            logger.error(f"Error processing query: {e}")
+            error_msg = f"Error processing query: {e}"
+            logger.error(error_msg)
             if self.verbose:
                 import traceback
                 logger.error(traceback.format_exc())
+            print(f"\nError: {error_msg}")
                 
 def main():
     """Main entry point for the CLI"""

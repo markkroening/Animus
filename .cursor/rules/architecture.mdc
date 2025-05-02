@@ -3,7 +3,7 @@ description:
 globs: 
 alwaysApply: false
 ---
-# Animus CLI Architecture (Refactored)
+# Animus CLI Architecture
 
 ## Overview
 Animus CLI is a Windows-based command-line tool for local Windows Event Log analysis. It combines PowerShell-based log collection with AI-powered log interpretation using Google's Gemini API. The application is structured into several modules for better organization and maintainability.
@@ -33,20 +33,7 @@ Animus CLI is a Windows-based command-line tool for local Windows Event Log anal
     - Ensures the default log directory exists with error handling.
     - Configures the default LLM model (`DEFAULT_MODEL_NAME`).
 
-### 3. Data Models (`animus_cli/data_models.py`)
-- **Purpose:** Defines structured representations of log and system data.
-- **Key Classes:**
-    - `EventLevel` (Enum): Represents event severity levels. Includes a `from_string` class method for safe conversion from string/numeric values.
-    - `EventLogEntry` (Dataclass): Represents a single event log record. Includes fields for time, log name, level, event ID, provider, message, machine name, user ID, task name, process ID, and thread ID. Includes a `from_dict` factory method.
-    - `SystemInfo` (Dataclass): Represents system hardware and OS information. Includes fields for OS details, hardware specs, uptime, and disk information. Includes a `from_dict` factory method.
-    - `LogCollection` (Dataclass): Represents the entire collection of logs and system info. Includes:
-        - Collection metadata (time, time range, file path)
-        - System information
-        - Event lists (system and application)
-        - Properties for accessing combined events (`all_events`), errors (`error_events`), warnings (`warning_events`), and counts (`event_count`)
-        - Methods for summary generation (`get_summary`) and dictionary conversion (`to_dict`)
-
-### 4. Log Processor (`animus_cli/log_processor.py`)
+### 3. Data Processing (`animus_cli/log_processor.py`)
 - **Purpose:** Processes and analyzes log data to make it more efficient and LLM-friendly.
 - **Key Class:**
     - `LogProcessor`: Handles log processing, filtering, and analysis with the following capabilities:
@@ -67,8 +54,13 @@ Animus CLI is a Windows-based command-line tool for local Windows Event Log anal
         - Timestamp normalization and sorting
         - Text cleaning and formatting for LLM consumption
         - Verbose logging support for debugging
+    - **Data Structure:**
+        - Works directly with dictionaries loaded from JSON
+        - No intermediate data model classes
+        - Input format matches PowerShell script output
+        - Output format optimized for LLM consumption
 
-### 5. Log Collector (`animus_cli/collector.py`)
+### 4. Log Collector (`animus_cli/collector.py`)
 - **Purpose:** Interfaces with the PowerShell log collection script.
 - **Key Functions:**
     - `get_script_path`: Determines the correct path to `collect_logs.ps1` in different execution contexts:
@@ -93,7 +85,7 @@ Animus CLI is a Windows-based command-line tool for local Windows Event Log anal
         - Verbose mode for debugging
         - Output file validation
 
-### 6. PowerShell Script (`animus_cli/scripts/collect_logs.ps1`)
+### 5. PowerShell Script (`animus_cli/scripts/collect_logs.ps1`)
 - **Purpose:** Performs the actual Windows Event Log collection.
 - **Responsibilities:**
     - Collects system information (OS version, hardware details).
@@ -127,7 +119,7 @@ Animus CLI is a Windows-based command-line tool for local Windows Event Log anal
         - Proper exit codes
         - Verbose logging support
 
-### 7. CLI Controller (`animus_cli/cli.py`)
+### 6. CLI Controller (`animus_cli/cli.py`)
 - **Purpose:** Encapsulates the core interactive and processing logic.
 - **Key Class:**
     - `AnimusCLI`:
@@ -154,7 +146,7 @@ Animus CLI is a Windows-based command-line tool for local Windows Event Log anal
         - Keyboard interrupt handling
         - Detailed error reporting in verbose mode
 
-### 8. LLM Integration (`animus_cli/llm_manager.py`)
+### 7. LLM Integration (`animus_cli/llm_manager.py`)
 - **Purpose:** Manages interaction with the Google Gemini API.
 - **Key Class:**
     - `LLMManager`:

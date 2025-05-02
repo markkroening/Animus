@@ -1,7 +1,7 @@
 #define MyAppName "Animus CLI"
 #define MyAppVersion "1.0"
 #define MyAppPublisher "Animus"
-#define MyAppURL "https://github.com/yourusername/animus"
+#define MyAppURL "https://github.com/markkroening/Animus"
 #define MyAppExeName "animus.bat"
 
 [Setup]
@@ -41,6 +41,8 @@ Source: "animus_cli\*"; DestDir: "{app}\animus_cli"; Flags: ignoreversion recurs
 Source: "animus.bat"; DestDir: "{app}"; Flags: ignoreversion
 Source: "requirements.txt"; DestDir: "{app}"; Flags: ignoreversion
 Source: "README.md"; DestDir: "{app}"; Flags: ignoreversion
+Source: "LICENSE.txt"; DestDir: "{app}"; Flags: ignoreversion
+Source: "uninstall_cleanup.bat"; DestDir: "{app}"; Flags: ignoreversion
 ; Exclude set_api_key.bat from installer
 
 [Icons]
@@ -67,6 +69,16 @@ begin
     exit;
   end;
   Result := Pos(';' + Uppercase(Param) + ';', ';' + Uppercase(OrigPath) + ';') = 0;
+end;
+
+procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
+var
+  ResultCode: Integer;
+begin
+  if CurUninstallStep = usUninstall then
+  begin
+    Exec(ExpandConstant('{app}\uninstall_cleanup.bat'), '', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  end;
 end;
 
 [Run]
